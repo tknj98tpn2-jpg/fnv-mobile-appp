@@ -1523,7 +1523,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
   const [totalInput, setTotalInput] = useState('');
   const [paymentMode, setPaymentMode] = useState('cash');
   const [purchaseNote, setPurchaseNote] = useState('');
-  const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [purchaseDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
 
   const [showAllVendorItems, setShowAllVendorItems] = useState(false);
@@ -1923,7 +1923,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
             <div
               key={it.id}
               onClick={() => selectMode ? toggleSelectItem(it.id) : openItem(it.id)}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderTop: `1px solid ${LINE}`, padding: '9px 0', cursor: 'pointer', background: isSelected ? '#EAF3DE' : 'transparent', borderRadius: isSelected ? 8 : 0, padding: '9px 4px' }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderTop: `1px solid ${LINE}`, cursor: 'pointer', background: isSelected ? '#EAF3DE' : 'transparent', borderRadius: isSelected ? 8 : 0, padding: '9px 4px' }}
             >
               {selectMode && (
                 <div style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${isSelected ? LEAF : LINE}`, background: isSelected ? LEAF : '#fff', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
