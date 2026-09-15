@@ -2289,15 +2289,70 @@ function buildPricingArticles(orders, items, purchases) {
 }
 
 function parseGrnRows(json) {
+  // Column-name order matters: Excel exports like Hyperpure's often have BOTH a
+  // "PO" and a "GRN" version of quantity/rate (and "Product UPC" alongside
+  // "Product Description") — the more specific "...GRN" / "...Description"
+  // candidates must be checked before the generic ones, or a generic match
+  // (e.g. "quantity") would grab the wrong column ("Quantity - PO") first.
   return json
     .map((r) => {
-      const code = String(pickField(r, ['code', 'sku', 'itemcode', 'articlecode', 'fsn']) || '').trim();
-      const name = String(pickField(r, ['itemname', 'name', 'article', 'product', 'description']) || '').trim();
-      const qty = Number(pickField(r, ['receivedqty', 'qty', 'quantity', 'accepted']) || 0);
-      const price = Number(pickField(r, ['price', 'rate', 'unitprice', 'unitrate']) || 0);
+      const code = String(pickField(r, ['itemcode', 'code', 'sku', 'articlecode', 'fsn']) || '').trim();
+      const name = String(pickField(r, ['productdescription', 'itemname', 'name', 'description', 'article', 'product']) || '').trim();
+      const qty = Number(pickField(r, ['quantitygrn', 'grnqty', 'receivedqty', 'accepted', 'qty', 'quantity']) || 0);
+      const price = Number(pickField(r, ['landingrategrn', 'grnlandingrate', 'rategrn', 'receivedprice', 'unitprice', 'unitrate', 'price', 'rate', 'landingrate']) || 0);
       return { code, name, qty, price };
     })
     .filter((r) => (r.code || r.name) && r.qty > 0);
+}
+
+// ── Hyperpure / Blinkit GRN report PDFs — parsed client-side via pdf.js ──
+// Each article row in these PDFs follows a fixed column order once all the
+// text is flattened onto one line: row# / item code / UPC / description /
+// MRP / tax / landing rate (PO avg, then GRN) / qty (PO, then GRN) /
+// fill rate% / total GRN amount / GMV loss. We only need the item code,
+// description, GRN qty and GRN landing rate.
+let pdfJsLoadPromise = null;
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfJsLoadPromise) return pdfJsLoadPromise;
+  pdfJsLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = () => reject(new Error('Could not load the PDF reader.'));
+    document.head.appendChild(script);
+  });
+  return pdfJsLoadPromise;
+}
+
+async function extractPdfText(file) {
+  const pdfjsLib = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    fullText += content.items.map((item) => item.str).join(' ') + '\n';
+  }
+  return fullText;
+}
+
+function parseGrnPdfText(text) {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const pattern = /(\d+) (\d{6,8}) (\d{6,10}) (\d{3,4}) (.*?) (\d+\.\d{2}) (\d+\.\d{2}) (\d+\.\d{2}) (\d+\.\d{2}|-) (\d+) (\d+) (\d+\.\d{2}) (\d+\.\d{2}) (\d+\.\d{2})/g;
+  const rows = [];
+  let match;
+  while ((match = pattern.exec(flat)) !== null) {
+    const [, , code, , , desc, , , , rateGrn, , qtyGrn] = match;
+    const qty = Number(qtyGrn) || 0;
+    const price = rateGrn === '-' ? 0 : Number(rateGrn) || 0;
+    if (qty > 0) rows.push({ code: code.trim(), name: desc.trim(), qty, price });
+  }
+  return rows;
 }
 
 function downloadPricingSheet(rows) {
@@ -2441,6 +2496,20 @@ function ProfitLossDayCard({ day, channel, records, grnReportsForDay, onUploadGr
     const file = e.target.files[0];
     if (!file) return;
     setFileError('');
+
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      extractPdfText(file)
+        .then((text) => {
+          const rows = parseGrnPdfText(text);
+          if (rows.length === 0) { setFileError('Could not find any GRN rows in this PDF. Try an Excel/CSV export instead.'); return; }
+          onUploadGrn(channel, day.date, file.name, rows);
+        })
+        .catch(() => setFileError('Could not read this PDF. Please try again or use an Excel/CSV export instead.'));
+      e.target.value = '';
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
@@ -2451,7 +2520,7 @@ function ProfitLossDayCard({ day, channel, records, grnReportsForDay, onUploadGr
         if (rows.length === 0) { setFileError('No rows with a valid code/name and received quantity were found.'); return; }
         onUploadGrn(channel, day.date, file.name, rows);
       } catch (err) {
-        setFileError('Could not read this file. Please upload a valid .xlsx, .xls, or .csv GRN report.');
+        setFileError('Could not read this file. Please upload a valid .xlsx, .xls, .csv, or .pdf GRN report.');
       }
     };
     reader.readAsArrayBuffer(file);
@@ -2520,14 +2589,14 @@ function ProfitLossDayCard({ day, channel, records, grnReportsForDay, onUploadGr
 
           <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 10, paddingTop: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Upload GRN report — {day.date}</div>
-            <div style={hint}>Upload the channel's Goods Received Note for this day to compare against our numbers.</div>
+            <div style={hint}>Upload the channel's Goods Received Note for this day — the Blinkit/Hyperpure PDF works directly, or an Excel/CSV export — to compare against our numbers.</div>
             <button
               onClick={() => fileInputRef.current?.click()}
               style={{ display: 'flex', alignItems: 'center', gap: 6, background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 8 }}
             >
               <Upload size={13} /> Upload GRN report
             </button>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleGrnFile} style={{ display: 'none' }} />
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={handleGrnFile} style={{ display: 'none' }} />
             {fileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: TOMATO, marginBottom: 8 }}><AlertCircle size={12} /> {fileError}</div>}
             {latestGrn && (
               <>
