@@ -9,7 +9,7 @@ import {
   Menu, X, LayoutDashboard, Tag, Scissors, ClipboardList, ShoppingBag,
   PackageCheck, Truck, Boxes, Users, Upload, FileSpreadsheet, AlertCircle,
   Trash2, Pencil, Plus, Sprout, ChevronRight, ArrowLeft, Download, Store,
-  Search, Layers,
+  Search, Layers, IndianRupee, TrendingUp,
 } from 'lucide-react';
 
 // ── Firebase — same project as the web admin panel, so data stays in sync ──
@@ -72,7 +72,7 @@ const SEED_ITEMS = [
 ];
 
 const SEED_ORDERS = [
-  { id: 'BLK-1042', platform: 'Blinkit', product: 'Tomato', qty: 240, unit: 'kg', status: 'pending', fulfilmentDate: '' },
+  { id: 'BLK-1042', platform: 'Blinkit', product: 'Tomato', articleName: 'Tomato Hybrid(Pack)', qty: 240, unit: 'kg', status: 'pending', packQty: 480, packSize: 0.5, packUnit: 'kg', fulfilmentDate: '' },
   { id: 'FKT-3391', platform: 'Flipkart', product: 'Onion', qty: 500, unit: 'kg', status: 'pending', fulfilmentDate: '' },
   { id: 'BLK-1043', platform: 'Blinkit', product: 'Banana', qty: 120, unit: 'dozen', status: 'packed', fulfilmentDate: '' },
   { id: 'FKT-3402', platform: 'Flipkart', product: 'Potato', qty: 350, unit: 'kg', status: 'dispatched', fulfilmentDate: '' },
@@ -94,13 +94,13 @@ const SEED_RECIPES = [
 ];
 
 const SEED_ROLES = [
-  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, cutprocess: true, orders: true, purchase: true, stockcount: true, packaging: true, dispatch: true, crates: true, users: true } },
-  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, cutprocess: false, orders: false, purchase: false, stockcount: true, packaging: true, dispatch: true, crates: true, users: false } },
+  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, cutprocess: true, orders: true, purchase: true, stockcount: true, pricing: true, profitloss: true, packaging: true, dispatch: true, crates: true, users: true } },
+  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, cutprocess: false, orders: false, purchase: false, stockcount: true, pricing: false, profitloss: false, packaging: true, dispatch: true, crates: true, users: false } },
 ];
 
 const SEED_USERS = [
-  { id: 'U-001', name: 'Rohit Sharma', contact: '98765 43210', roleId: 'ROLE-ADMIN', status: 'active' },
-  { id: 'U-002', name: 'Suresh Patil', contact: '91234 56780', roleId: 'ROLE-WAREHOUSE', status: 'active' },
+  { id: 'U-001', name: 'Rohit Sharma', contact: '98765 43210', roleId: 'ROLE-ADMIN', status: 'active', username: 'rohit', password: 'admin123' },
+  { id: 'U-002', name: 'Suresh Patil', contact: '91234 56780', roleId: 'ROLE-WAREHOUSE', status: 'active', username: 'suresh', password: 'warehouse123' },
 ];
 
 const SEED_VENDORS = [
@@ -123,6 +123,8 @@ const NAV = [
   { key: 'orders', label: 'Orders', icon: ClipboardList },
   { key: 'purchase', label: 'Purchases', icon: ShoppingBag },
   { key: 'stockcount', label: 'Stock Count', icon: Layers },
+  { key: 'pricing', label: 'Pricing', icon: IndianRupee },
+  { key: 'profitloss', label: 'Profit & Loss', icon: TrendingUp },
   { key: 'packaging', label: 'Packaging', icon: PackageCheck },
   { key: 'dispatch', label: 'Dispatch', icon: Truck },
   { key: 'crates', label: 'Crates & boxes', icon: Boxes },
@@ -194,6 +196,42 @@ const sectionTitle = { fontWeight: 700, fontSize: 14, color: INK, marginBottom: 
 const hint = { fontSize: 11, color: MUTED, marginBottom: 8 };
 const smallLabel = { fontSize: 11, color: MUTED, fontWeight: 700, marginBottom: 4, marginTop: 4 };
 
+function LoginScreenMobile({ onLogin, error }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  const submit = () => {
+    if (!username.trim() || !password.trim()) return;
+    onLogin(username, password);
+  };
+
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+      <div style={{ width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <Sprout size={32} color={LEAF} />
+        <div style={{ fontWeight: 800, fontSize: 18, color: INK, marginTop: 10 }}>FNV Business App</div>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 20 }}>Sign in to continue</div>
+        <div style={{ width: '100%' }}>
+          <Field placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <div style={{ position: 'relative' }}>
+            <Field placeholder="Password" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} style={{ paddingRight: 56 }} />
+            <button onClick={() => setShowPassword((s) => !s)} style={{ position: 'absolute', right: 10, top: 9, background: 'none', border: 'none', color: LEAF, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {error && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: TOMATO, marginTop: -4, marginBottom: 10 }}>
+              <AlertCircle size={12} /> {error}
+            </div>
+          )}
+          <PrimaryBtn onClick={submit}>Sign in</PrimaryBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function FnvMobilePreview() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tab, setTab] = useState('dashboard');
@@ -213,7 +251,11 @@ export default function FnvMobilePreview() {
   const [indentBatches, setIndentBatches] = useState([]);
   const [packingProgress, setPackingProgress] = useState({}); // { [targetKey]: packedPacks }
   const [stockCounts, setStockCounts] = useState([]); // nightly closing-stock entries, one per item per date
+  const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
+  const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
   const [dbReady, setDbReady] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loginError, setLoginError] = useState('');
 
   useEffect(() => {
     // Seed collections on first load, then subscribe
@@ -230,8 +272,8 @@ export default function FnvMobilePreview() {
       setDbReady(true);
     })();
 
-    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts'];
-    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts };
+    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','pricingConfig','grnReports'];
+    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, pricingConfig: setPricingConfig, grnReports: setGrnReports };
 
     const unsubs = cols.map((col) =>
       onSnapshot(collection(db, col), (snap) => {
@@ -254,6 +296,28 @@ export default function FnvMobilePreview() {
 
     return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); };
   }, []);
+
+  // ── Session — restore a saved login once the users list has loaded ──
+  useEffect(() => {
+    if (!dbReady || currentUser) return;
+    const savedId = window.localStorage.getItem('fnv_current_user_id');
+    if (!savedId) return;
+    const u = users.find((x) => x.id === savedId && x.status === 'active');
+    if (u) setCurrentUser(u);
+  }, [dbReady, users, currentUser]);
+
+  const handleLogin = (usernameInput, passwordInput) => {
+    const uname = usernameInput.trim().toLowerCase();
+    const match = users.find((u) => (u.username || '').toLowerCase() === uname && u.password === passwordInput && u.status === 'active');
+    if (!match) { setLoginError('Incorrect username or password, or this account is inactive.'); return; }
+    setLoginError('');
+    setCurrentUser(match);
+    window.localStorage.setItem('fnv_current_user_id', match.id);
+  };
+  const handleLogout = () => {
+    setCurrentUser(null);
+    window.localStorage.removeItem('fnv_current_user_id');
+  };
 
   const fbUpdate = (col, id, patch)  => updateDoc(doc(db, col, id), patch);
   const fbDelete = (col, id)         => deleteDoc(doc(db, col, id));
@@ -280,10 +344,18 @@ export default function FnvMobilePreview() {
   const advanceStatus = (id, next) => fbUpdate('orders', id, { status: next });
   const advanceMany = (ids, next) => { const b = writeBatch(db); ids.forEach((id) => b.update(doc(db,'orders',id), { status: next })); b.commit(); };
   const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p });
-  const addPurchaseRequirements = (rows) => { const b = writeBatch(db); const today = new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r })); b.commit(); };
+  const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r })); b.commit(); };
   const removePurchasesByIds = (ids) => { const b = writeBatch(db); ids.forEach((id) => b.delete(doc(db,'purchases',id))); b.commit(); };
   const recordStockCount = (itemId, itemName, unit, date, closingQty) => {
     fbSetDoc('stockCounts', `${itemId}__${date}`, { id: `${itemId}__${date}`, itemId, itemName, unit, date, closingQty: Number(closingQty) || 0 });
+  };
+  const updatePricingConfig = (key, patch) => {
+    const existing = pricingConfig.find((p) => p.id === key);
+    fbSetDoc('pricingConfig', key, { id: key, ...(existing || {}), ...patch });
+  };
+  const uploadGrnReport = (channel, date, fileName, rows) => {
+    const id = `GRN-${channel.slice(0, 3).toUpperCase()}-${date}-${Date.now().toString(36).toUpperCase().slice(-6)}`;
+    fbSetDoc('grnReports', id, { id, channel, date, fileName, uploadedAt: new Date().toISOString().split('T')[0], rows });
   };
   const addRecipe = (r) => fbSetDoc('recipes', r.id, r);
   const deleteRecipe = (id) => fbDelete('recipes', id);
@@ -315,13 +387,17 @@ export default function FnvMobilePreview() {
       patch.status = remaining > 0.01 ? 'packed' : 'dispatched';
       b.update(doc(db, 'orders', orderId), patch);
       totalDispatchQty += dQty;
-      logItems.push({ orderId, product: o.articleName || o.product, unit: o.unit, dispatchQty: dQty, shortQty: sQty, remaining: Math.max(0, remaining) });
+      logItems.push({
+        orderId, product: o.articleName || o.product, unit: o.unit, dispatchQty: dQty, shortQty: sQty, remaining: Math.max(0, remaining),
+        platform: o.platform, baseProduct: o.product, packSize: o.packSize || null, packUnit: o.packUnit || null,
+      });
     });
     b.commit();
+    const dispatchDate = new Date().toISOString().split('T')[0];
     if (cratesUsed > 0) adjustCrates('crates', -cratesUsed, `Dispatch ${vehicleNo || ''}`.trim());
     if (boxesUsed > 0) adjustCrates('boxes', -boxesUsed, `Dispatch ${vehicleNo || ''}`.trim());
     const did = `DSP-${Date.now().toString(36).toUpperCase().slice(-6)}`;
-    fbSetDoc('dispatchLog', did, { id: did, items: logItems, orderIds: logItems.map((li) => li.orderId), totalDispatchQty, vehicleNo: vehicleNo || '—', driverName: driverName || '—', cratesUsed, boxesUsed, time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) });
+    fbSetDoc('dispatchLog', did, { id: did, date: dispatchDate, items: logItems, orderIds: logItems.map((li) => li.orderId), totalDispatchQty, vehicleNo: vehicleNo || '—', driverName: driverName || '—', cratesUsed, boxesUsed, time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) });
   };
   const createIndentBatch = (b) => fbSetDoc('indentBatches', b.id, b);
   const updatePackedQty = (key, packedQty, orderIds, targetPacks) => {
@@ -332,7 +408,7 @@ export default function FnvMobilePreview() {
       if (o && o.status !== 'dispatched') fbUpdate('orders', id, { status: complete ? 'packed' : 'pending' });
     });
   };
-  const toggleReleaseBatch = (batchId) => {
+  const toggleReleaseBatch = (batchId, purchaseDate) => {
     const batch = indentBatches.find((b) => b.id === batchId);
     if (!batch) return;
     if (batch.released) {
@@ -340,8 +416,8 @@ export default function FnvMobilePreview() {
       fbUpdate('indentBatches', batchId, { released: false, purchaseRowIds: [] });
     } else {
       const newRows = batch.compiled.map((c, i) => ({ id: `P-REL-${batchId}-${i}`, item: c.itemName, supplier: '', qty: c.qty, unit: c.unit, cost: 0, source: `Released: ${batch.platform} indent (${batch.fileName})` }));
-      addPurchaseRequirements(newRows);
-      fbUpdate('indentBatches', batchId, { released: true, purchaseRowIds: newRows.map((r) => r.id) });
+      addPurchaseRequirements(newRows, purchaseDate);
+      fbUpdate('indentBatches', batchId, { released: true, purchaseRowIds: newRows.map((r) => r.id), purchaseDate });
     }
   };
   const addUser = (u) => fbSetDoc('users', u.id, u);
@@ -391,6 +467,11 @@ export default function FnvMobilePreview() {
     </div>
   );
 
+  if (!currentUser) return <LoginScreenMobile onLogin={handleLogin} error={loginError} />;
+
+  const currentRole = roles.find((r) => r.id === currentUser.roleId);
+  const visibleNavItems = NAV.filter((n) => !currentRole || currentRole.permissions[n.key] !== false);
+
   return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
       <div style={{ width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
@@ -418,6 +499,8 @@ export default function FnvMobilePreview() {
           )}
           {tab === 'purchase' && <PurchasesTab purchases={purchases} orders={orders} items={items} recipes={recipes} vendors={vendors} vendorLedger={vendorLedger} stockCounts={stockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={indentBatches} />}
           {tab === 'stockcount' && <StockCountTab items={items} stockCounts={stockCounts} onRecord={recordStockCount} />}
+          {tab === 'pricing' && <PricingTab orders={orders} items={items} purchases={purchases} pricingConfig={pricingConfig} onUpdate={updatePricingConfig} />}
+          {tab === 'profitloss' && <ProfitLossTab orders={orders} items={items} purchases={purchases} pricingConfig={pricingConfig} dispatchLog={dispatchLog} grnReports={grnReports} onUploadGrn={uploadGrnReport} />}
           {tab === 'packaging' && <PackagingTab orders={orders} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} />}
           {tab === 'dispatch' && (
             <DispatchTab orders={orders} crates={crates} dispatchLog={dispatchLog} onAdvance={advanceStatus} onDispatchBatch={dispatchBatch} />
@@ -443,7 +526,7 @@ export default function FnvMobilePreview() {
                 <button onClick={() => setDrawerOpen(false)} style={{ background: 'none', border: 'none', color: '#B7C2B2', cursor: 'pointer' }}><X size={18} /></button>
               </div>
               <div style={{ padding: '10px 8px', flex: 1, overflowY: 'auto' }}>
-                {NAV.map((n) => (
+                {visibleNavItems.map((n) => (
                   <button
                     key={n.key}
                     onClick={() => { setTab(n.key); setDrawerOpen(false); }}
@@ -453,6 +536,12 @@ export default function FnvMobilePreview() {
                     {n.label}
                   </button>
                 ))}
+              </div>
+              <div style={{ padding: '10px 14px 16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                <div style={{ fontSize: 11, color: '#8A968A', marginBottom: 8 }}>Signed in as <strong style={{ color: '#fff' }}>{currentUser.name}</strong></div>
+                <button onClick={() => { handleLogout(); setDrawerOpen(false); }} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'transparent', border: 'none', color: '#B7C2B2', fontSize: 12, cursor: 'pointer', padding: 0 }}>
+                  <ArrowLeft size={14} /> Log out
+                </button>
               </div>
             </div>
             <div onClick={() => setDrawerOpen(false)} style={{ flex: 1, background: 'rgba(0,0,0,0.35)' }} />
@@ -1295,6 +1384,33 @@ function CutProcessTab({ items, recipes, orders, onAddRecipe, onDeleteRecipe, on
 }
 
 // ---------- Orders ----------
+function ReleaseBatchCard({ batch: b, onToggleReleaseBatch }) {
+  const [purchaseDate, setPurchaseDate] = useState(b.purchaseDate || '');
+
+  return (
+    <div style={{ borderTop: `1px solid ${LINE}`, padding: '10px 0' }}>
+      <div style={{ fontWeight: 700, fontSize: 13 }}>{b.platform} indent — {b.fileName}</div>
+      <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 8px' }}>{b.compiled.map((c) => `${c.qty} ${c.unit} ${c.itemName}`).join(', ')}</div>
+      {b.released && b.purchaseDate && (
+        <div style={{ fontSize: 11, color: LEAF, fontWeight: 700, marginBottom: 6 }}>Purchase date: {b.purchaseDate}</div>
+      )}
+      {!b.released && (
+        <>
+          <div style={smallLabel}>Purchase date (required)</div>
+          <Field type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} style={{ marginBottom: 8 }} />
+        </>
+      )}
+      <button
+        onClick={() => onToggleReleaseBatch(b.id, purchaseDate)}
+        disabled={!b.released && !purchaseDate}
+        style={{ width: '100%', background: b.released ? '#fff' : (!purchaseDate ? '#C9C2AE' : TOMATO), color: b.released ? TOMATO : '#fff', border: b.released ? `1px solid ${TOMATO}` : 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, cursor: (!b.released && !purchaseDate) ? 'default' : 'pointer' }}
+      >
+        {b.released ? 'Withdraw from Purchase Manager' : 'Release to Purchase Manager'}
+      </button>
+    </div>
+  );
+}
+
 function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch }) {
   const [platform, setPlatform] = useState('Blinkit');
   const [product, setProduct] = useState('');
@@ -1304,11 +1420,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   const [indentPlatform, setIndentPlatform] = useState('Blinkit');
   const [indentFulfilmentDate, setIndentFulfilmentDate] = useState('');
   const [pendingIndent, setPendingIndent] = useState(null);
+  const [selectedRowKeys, setSelectedRowKeys] = useState(new Set());
   const [fileError, setFileError] = useState('');
   const fileInputRef = useRef(null);
 
   const submit = () => {
-    if (!product.trim() || !qty || Number(qty) <= 0) return;
+    if (!product.trim() || !qty || Number(qty) <= 0 || !fulfilmentDate) return;
     onImport({ id: `${platform.slice(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`, platform, product: product.trim(), qty: Number(qty), unit, status: 'pending', fulfilmentDate });
     setProduct(''); setQty(''); setFulfilmentDate('');
   };
@@ -1316,6 +1433,11 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    if (!indentFulfilmentDate) {
+      setFileError('Please set the fulfilment date before uploading an indent.');
+      e.target.value = '';
+      return;
+    }
     setFileError('');
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -1333,6 +1455,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           return { ...r, mappedItemId: match ? match.id : '' };
         });
         setPendingIndent({ platform: indentPlatform, fileName: file.name, rows, fulfilmentDate: indentFulfilmentDate });
+        setSelectedRowKeys(new Set(rows.map((r) => r.key))); // select all by default
       } catch (err) {
         setFileError('Could not read this file. Please upload a valid .xlsx, .xls, or .csv indent.');
       }
@@ -1340,6 +1463,17 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     reader.readAsArrayBuffer(file);
     e.target.value = '';
   };
+
+  const toggleRowSelected = (key) => {
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const selectAllRows = () => setSelectedRowKeys(new Set((pendingIndent?.rows || []).map((r) => r.key)));
+  const clearAllRows = () => setSelectedRowKeys(new Set());
 
   const setRowMapping = (key, value) => {
     setPendingIndent((prev) => ({
@@ -1369,14 +1503,15 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   };
   const getPackSize = (r) => getRowAlias(r)?.packSize || '';
   const isRowReady = (r) => !!r.mappedItemId && Number(getPackSize(r)) > 0;
-  const mappedCount = pendingIndent ? pendingIndent.rows.filter(isRowReady).length : 0;
+  const readyCount = pendingIndent ? pendingIndent.rows.filter(isRowReady).length : 0;
+  const importCount = pendingIndent ? pendingIndent.rows.filter((r) => isRowReady(r) && selectedRowKeys.has(r.key)).length : 0;
 
   const importMapped = () => {
     if (!pendingIndent) return;
     const remaining = [];
     const compiledMap = {};
     pendingIndent.rows.forEach((r) => {
-      if (!isRowReady(r)) { remaining.push(r); return; }
+      if (!isRowReady(r) || !selectedRowKeys.has(r.key)) { remaining.push(r); return; }
       const item = items.find((it) => it.id === r.mappedItemId);
       if (!item) { remaining.push(r); return; }
       const alias = getRowAlias(r);
@@ -1404,6 +1539,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     if (compiled.length > 0) onCreateIndentBatch({ id: `BATCH-${Date.now().toString(36).toUpperCase().slice(-6)}`, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [] });
     if (!remaining.length) setIndentFulfilmentDate('');
     setPendingIndent(remaining.length ? { ...pendingIndent, rows: remaining } : null);
+    setSelectedRowKeys(new Set(remaining.filter((r) => selectedRowKeys.has(r.key)).map((r) => r.key)));
   };
 
   return (
@@ -1411,63 +1547,62 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
       {indentBatches.length > 0 && (
         <Card style={{ marginBottom: 14 }}>
           <div style={sectionTitle}>Release to Purchase Manager</div>
-          {indentBatches.map((b) => (
-            <div key={b.id} style={{ borderTop: `1px solid ${LINE}`, padding: '10px 0' }}>
-              <div style={{ fontWeight: 700, fontSize: 13 }}>{b.platform} indent — {b.fileName}</div>
-              <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 8px' }}>{b.compiled.map((c) => `${c.qty} ${c.unit} ${c.itemName}`).join(', ')}</div>
-              <button onClick={() => onToggleReleaseBatch(b.id)} style={{ width: '100%', background: b.released ? '#fff' : TOMATO, color: b.released ? TOMATO : '#fff', border: b.released ? `1px solid ${TOMATO}` : 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                {b.released ? 'Withdraw from Purchase Manager' : 'Release to Purchase Manager'}
-              </button>
-            </div>
-          ))}
+          {indentBatches.map((b) => <ReleaseBatchCard key={b.id} batch={b} onToggleReleaseBatch={onToggleReleaseBatch} />)}
         </Card>
       )}
 
       <Card style={{ marginBottom: 14 }}>
         <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><FileSpreadsheet size={14} /> Import indent (Excel)</div>
-        {!pendingIndent ? (
-          <>
-            <div style={hint}>Upload the Blinkit or Flipkart indent file — we'll ask you to map each article to an item.</div>
-            <div style={{ display: 'flex', marginBottom: 8 }}>{PLATFORMS.map((p) => <Chip key={p} label={p} active={indentPlatform === p} onClick={() => setIndentPlatform(p)} />)}</div>
-            <div style={smallLabel}>Fulfilment date (applies to this whole indent)</div>
-            <Field type="date" value={indentFulfilmentDate} onChange={(e) => setIndentFulfilmentDate(e.target.value)} />
-            <button onClick={() => fileInputRef.current?.click()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: LEAF, color: '#fff', border: 'none', borderRadius: 10, padding: '11px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
-              <Upload size={14} /> Upload {indentPlatform} indent
-            </button>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{ display: 'none' }} />
-            {fileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: TOMATO, marginTop: 8 }}><AlertCircle size={13} /> {fileError}</div>}
-          </>
-        ) : (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: MUTED, flex: 1 }}>{pendingIndent.fileName} · {pendingIndent.platform} · {pendingIndent.rows.length} found, {mappedCount} ready{pendingIndent.fulfilmentDate ? ` · ${pendingIndent.fulfilmentDate}` : ''}</div>
+        <div style={hint}>Upload the Blinkit or Flipkart indent file. You can upload another one (e.g. a different date) even while one is still being mapped below — it replaces whatever's unfinished in the table.</div>
+        <div style={{ display: 'flex', marginBottom: 8 }}>{PLATFORMS.map((p) => <Chip key={p} label={p} active={indentPlatform === p} onClick={() => setIndentPlatform(p)} />)}</div>
+        <div style={smallLabel}>Fulfilment date (required)</div>
+        <Field type="date" value={indentFulfilmentDate} onChange={(e) => setIndentFulfilmentDate(e.target.value)} />
+        <PrimaryBtn onClick={() => fileInputRef.current?.click()} disabled={!indentFulfilmentDate}>Upload {indentPlatform} indent</PrimaryBtn>
+        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{ display: 'none' }} />
+        {!indentFulfilmentDate && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: AMBER, marginTop: 8 }}><AlertCircle size={12} /> Fulfilment date is required before you can upload.</div>}
+        {fileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: TOMATO, marginTop: 8 }}><AlertCircle size={13} /> {fileError}</div>}
+
+        {pendingIndent && (
+          <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 14, paddingTop: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <div style={{ fontSize: 11, color: MUTED, flex: 1 }}>{pendingIndent.fileName} · {pendingIndent.platform} · {pendingIndent.rows.length} found, {readyCount} ready{pendingIndent.fulfilmentDate ? ` · ${pendingIndent.fulfilmentDate}` : ''}</div>
               <button onClick={() => setPendingIndent(null)} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Cancel</button>
+            </div>
+            <div style={{ display: 'flex', gap: 14, marginBottom: 8 }}>
+              <button onClick={selectAllRows} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: 0 }}>Select all</button>
+              <button onClick={clearAllRows} style={{ background: 'none', border: 'none', color: MUTED, fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: 0 }}>Clear</button>
+              <span style={{ fontSize: 12, color: MUTED }}>{selectedRowKeys.size} selected</span>
             </div>
             {pendingIndent.rows.map((r) => {
               const mappedItem = getMappedItem(r.mappedItemId);
               const rowAlias = getRowAlias(r);
               const packSize = rowAlias?.packSize || '';
               return (
-                <div key={r.key} style={{ borderTop: `1px solid ${LINE}`, padding: '10px 0' }}>
-                  <div style={{ fontWeight: 700, fontSize: 13 }}>{r.rawName}</div>
-                  <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 6px' }}>Qty {r.qty} · UOM {r.unit || '—'} · Code {r.rawCode || '—'} · {r.rawCategory || '—'}</div>
-                  <div style={smallLabel}>Map to item</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-                    {items.map((it) => <Chip key={it.id} label={it.name} active={r.mappedItemId === it.id} onClick={() => setRowMapping(r.key, it.id)} />)}
-                    <Chip label={`+ New "${r.rawName}"`} active={false} onClick={() => setRowMapping(r.key, '__new__')} />
+                <div key={r.key} style={{ borderTop: `1px solid ${LINE}`, padding: '10px 0', background: selectedRowKeys.has(r.key) ? '#F6F3EA' : 'transparent' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <input type="checkbox" checked={selectedRowKeys.has(r.key)} onChange={() => toggleRowSelected(r.key)} style={{ marginTop: 3 }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{r.rawName}</div>
+                      <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 6px' }}>Qty {r.qty} · UOM {r.unit || '—'} · Code {r.rawCode || '—'} · {r.rawCategory || '—'}</div>
+                      <div style={smallLabel}>Map to item</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                        {items.map((it) => <Chip key={it.id} label={it.name} active={r.mappedItemId === it.id} onClick={() => setRowMapping(r.key, it.id)} />)}
+                        <Chip label={`+ New "${r.rawName}"`} active={false} onClick={() => setRowMapping(r.key, '__new__')} />
+                      </div>
+                      {mappedItem && rowAlias && (
+                        <>
+                          <div style={smallLabel}>Pack size ({mappedItem.uom} per pack)</div>
+                          <Field placeholder="e.g. 0.5" type="number" value={packSize} onChange={(e) => onUpdateAlias(mappedItem.id, rowAlias.id, { packSize: e.target.value })} style={{ width: 120 }} />
+                        </>
+                      )}
+                    </div>
                   </div>
-                  {mappedItem && rowAlias && (
-                    <>
-                      <div style={smallLabel}>Pack size ({mappedItem.uom} per pack)</div>
-                      <Field placeholder="e.g. 0.5" type="number" value={packSize} onChange={(e) => onUpdateAlias(mappedItem.id, rowAlias.id, { packSize: e.target.value })} style={{ width: 120 }} />
-                    </>
-                  )}
                 </div>
               );
             })}
-            {mappedCount < pendingIndent.rows.length && <div style={{ fontSize: 11, color: AMBER, marginBottom: 10 }}>{pendingIndent.rows.length - mappedCount} article(s) still need mapping and/or pack size.</div>}
-            <PrimaryBtn onClick={importMapped} disabled={mappedCount === 0}>Import {mappedCount} ready order{mappedCount !== 1 ? 's' : ''}</PrimaryBtn>
-          </>
+            {readyCount < pendingIndent.rows.length && <div style={{ fontSize: 11, color: AMBER, marginTop: 10, marginBottom: 10 }}>{pendingIndent.rows.length - readyCount} article(s) still need mapping and/or pack size.</div>}
+            <PrimaryBtn onClick={importMapped} disabled={importCount === 0}>Import {importCount} selected &amp; ready order{importCount !== 1 ? 's' : ''}</PrimaryBtn>
+          </div>
         )}
       </Card>
 
@@ -1475,10 +1610,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
         <div style={sectionTitle}>Add order manually</div>
         <div style={{ display: 'flex', marginBottom: 8 }}>{PLATFORMS.map((p) => <Chip key={p} label={p} active={platform === p} onClick={() => setPlatform(p)} />)}</div>
         <Field placeholder="Product" value={product} onChange={(e) => setProduct(e.target.value)} />
+        <div style={smallLabel}>Fulfilment date (required)</div>
         <Field type="date" value={fulfilmentDate} onChange={(e) => setFulfilmentDate(e.target.value)} />
         <Field placeholder="Quantity" type="number" value={qty} onChange={(e) => setQty(e.target.value)} />
         <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 10 }}>{['kg', 'dozen', 'bunch', 'crate'].map((u) => <Chip key={u} label={u} active={unit === u} onClick={() => setUnit(u)} />)}</div>
-        <PrimaryBtn onClick={submit}>Add order</PrimaryBtn>
+        {!fulfilmentDate && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: AMBER, marginBottom: 8 }}><AlertCircle size={12} /> Fulfilment date is required.</div>}
+        <PrimaryBtn onClick={submit} disabled={!product.trim() || !qty || Number(qty) <= 0 || !fulfilmentDate}>Add order</PrimaryBtn>
       </Card>
 
       <Card>
@@ -1501,12 +1638,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS', 'CUT'];
 
 function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches }) {
-  const [selectedDate, setSelectedDate] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [bufferPercent, setBufferPercent] = useState('0');
   const [purchasedDate, setPurchasedDate] = useState('');
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [selectedVendorId, setSelectedVendorId] = useState('');
+  const [view, setView] = useState('list'); // 'list' | 'purchased'
 
   // Multi-select / order sharing
   const [selectMode, setSelectMode] = useState(false);
@@ -1588,7 +1725,6 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     };
     orders
       .filter((o) => o.status !== 'dispatched')
-      .filter((o) => !selectedDate || o.fulfilmentDate === selectedDate)
       .forEach((o) => {
         const matchingRecipes = recipes.filter((r) => items.find((it) => it.id === r.outputItemId)?.name === o.product);
         if (matchingRecipes.length > 0) {
@@ -1605,7 +1741,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
         }
       });
     return map;
-  }, [orders, selectedDate, recipes, items]);
+  }, [orders, recipes, items]);
 
   // "Available stock" = latest nightly stock count (if any) as baseline, plus every
   // actual completed purchase made since — "requirement" rows (from released indents /
@@ -1856,8 +1992,8 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     );
   }
 
-  const hasActiveFilters = !!selectedDate || categoryFilter !== 'ALL' || Number(bufferPercent) !== 0;
-  const clearFilters = () => { setSelectedDate(''); setCategoryFilter('ALL'); setBufferPercent('0'); };
+  const hasActiveFilters = categoryFilter !== 'ALL' || Number(bufferPercent) !== 0;
+  const clearFilters = () => { setCategoryFilter('ALL'); setBufferPercent('0'); };
 
   const confirmShareOrder = () => {
     const orderItems = filteredItems
@@ -1869,33 +2005,62 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     exitSelectMode();
   };
 
+  const allPurchasedCount = purchases.filter((p) => p.type !== 'requirement').length;
+
+  if (view === 'purchased') {
+    return (
+      <div style={{ padding: 16 }}>
+        <button onClick={() => setView('list')} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 13, cursor: 'pointer', marginBottom: 12, padding: 0 }}>
+          <ArrowLeft size={15} /> Back
+        </button>
+        <Card>
+          <div style={sectionTitle}>Purchased{purchasedDate ? ` on ${purchasedDate}` : ''} ({purchasedList.length})</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 10 }}>
+            <Field type="date" value={purchasedDate} onChange={(e) => setPurchasedDate(e.target.value)} style={{ marginBottom: 0, flex: 1 }} />
+            {purchasedDate && (
+              <button onClick={() => setPurchasedDate('')} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear</button>
+            )}
+          </div>
+          {purchasedList.map((p) => (
+            <div key={p.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{p.item}</div>
+              <div style={{ fontSize: 11, color: MUTED }}>{p.date || '—'} · {p.supplier || 'No supplier'} · {p.qty} {p.unit || 'kg'} · ₹{p.cost.toLocaleString('en-IN')}</div>
+            </div>
+          ))}
+          {purchasedList.length === 0 && <div style={hint}>{purchasedDate ? 'Nothing purchased on this date.' : 'No purchases recorded yet.'}</div>}
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>Filters</div>
-          {hasActiveFilters && (
-            <button onClick={clearFilters} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear</button>
-          )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <span style={{ fontSize: 11, color: MUTED }}>Category</span>
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', marginTop: 4, padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, color: INK, background: '#fff' }}
+            >
+              {PURCHASE_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div style={{ width: 90 }}>
+            <span style={{ fontSize: 11, color: MUTED }}>Buffer %</span>
+            <Field type="number" placeholder="0" value={bufferPercent} onChange={(e) => setBufferPercent(e.target.value)} style={{ marginBottom: 0 }} />
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <span style={{ fontSize: 12, color: MUTED, width: 66, flexShrink: 0 }}>Date</span>
-          <Field type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ marginBottom: 0, flex: 1 }} />
-        </div>
-        <div>
-          <span style={{ fontSize: 11, color: MUTED }}>Category</span>
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            style={{ width: '100%', boxSizing: 'border-box', marginTop: 4, padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, color: INK, background: '#fff' }}
-          >
-            {PURCHASE_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
-        <div style={{ marginTop: 10 }}>
-          <span style={{ fontSize: 11, color: MUTED }}>Stock buffer % (hide items already stocked past this margin)</span>
-          <Field type="number" placeholder="0" value={bufferPercent} onChange={(e) => setBufferPercent(e.target.value)} style={{ marginBottom: 0 }} />
-        </div>
+        {hasActiveFilters && (
+          <button onClick={clearFilters} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 12, fontWeight: 700, cursor: 'pointer', marginTop: 8, padding: 0 }}>Clear filters</button>
+        )}
+        <button
+          onClick={() => setView('purchased')}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: LEAF, color: '#fff', border: 'none', borderRadius: 10, padding: '10px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer', marginTop: 10 }}
+        >
+          Purchased ({allPurchasedCount})
+        </button>
       </Card>
 
       <Card>
@@ -1960,25 +2125,6 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
             )}
           </div>
         )}
-      </Card>
-
-      <Card style={{ marginTop: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <div style={sectionTitle}>Purchased{purchasedDate ? ` on ${purchasedDate}` : ''} ({purchasedList.length})</div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <Field type="date" value={purchasedDate} onChange={(e) => setPurchasedDate(e.target.value)} style={{ marginBottom: 0, flex: 1 }} />
-          {purchasedDate && (
-            <button onClick={() => setPurchasedDate('')} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear</button>
-          )}
-        </div>
-        {purchasedList.map((p) => (
-          <div key={p.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{p.item}</div>
-            <div style={{ fontSize: 11, color: MUTED }}>{p.date || '—'} · {p.supplier || 'No supplier'} · {p.qty} {p.unit || 'kg'} · ₹{p.cost.toLocaleString('en-IN')}</div>
-          </div>
-        ))}
-        {purchasedList.length === 0 && <div style={hint}>{purchasedDate ? 'Nothing purchased on this date.' : 'No purchases recorded yet.'}</div>}
       </Card>
 
       {/* Order name modal */}
@@ -2090,8 +2236,391 @@ function StockCountTab({ items, stockCounts, onRecord }) {
   );
 }
 
+function computeFinalPrice(basePrice, config) {
+  if (basePrice == null) return null;
+  const gradingPercent = config?.gradingPercent ?? 0;
+  const vendorMarginPercent = config?.vendorMarginPercent ?? 0;
+  const packaging = config?.packaging ?? 0;
+  const labour = config?.labour ?? 0;
+  const transportation = config?.transportation ?? 0;
+  const graded = basePrice * (1 + gradingPercent / 100);
+  return Math.round((graded * (1 + vendorMarginPercent / 100) + packaging + labour + transportation) * 100) / 100;
+}
+
+function buildLatestUnitPriceByItem(purchases) {
+  const map = {};
+  purchases
+    .filter((p) => p.type !== 'requirement' && p.qty > 0)
+    .forEach((p) => {
+      if (!map[p.item] || (p.date || '') >= (map[p.item].date || '')) {
+        map[p.item] = { date: p.date || '', unitPrice: p.cost / p.qty };
+      }
+    });
+  return map;
+}
+
+// One entry per distinct article that has come through an indent — same product can have
+// several pack sizes, each priced separately. Shared by Pricing and Profit & Loss tabs.
+function buildPricingArticles(orders, items, purchases) {
+  const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
+  const map = {};
+  orders
+    .filter((o) => o.packSize && o.packUnit)
+    .forEach((o) => {
+      const key = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      if (map[key]) return;
+      const item = items.find((it) => it.name === o.product);
+      const unitPriceInfo = latestUnitPriceByItem[o.product];
+      const basePrice = unitPriceInfo ? Math.round(unitPriceInfo.unitPrice * o.packSize * 100) / 100 : null;
+      const alias = (item?.aliases || []).find((al) => al.channel === o.platform && String(al.packSize) === String(o.packSize) && al.packUnit === o.packUnit);
+      map[key] = {
+        key,
+        articleName: o.articleName || o.product,
+        product: o.product,
+        category: item?.category || '',
+        platform: o.platform,
+        code: alias?.code || '',
+        packSize: o.packSize,
+        packUnit: o.packUnit,
+        basePrice,
+      };
+    });
+  return Object.values(map).sort((a, b) => a.articleName.localeCompare(b.articleName));
+}
+
+function parseGrnRows(json) {
+  return json
+    .map((r) => {
+      const code = String(pickField(r, ['code', 'sku', 'itemcode', 'articlecode', 'fsn']) || '').trim();
+      const name = String(pickField(r, ['itemname', 'name', 'article', 'product', 'description']) || '').trim();
+      const qty = Number(pickField(r, ['receivedqty', 'qty', 'quantity', 'accepted']) || 0);
+      const price = Number(pickField(r, ['price', 'rate', 'unitprice', 'unitrate']) || 0);
+      return { code, name, qty, price };
+    })
+    .filter((r) => (r.code || r.name) && r.qty > 0);
+}
+
+function downloadPricingSheet(rows) {
+  const sheetRows = rows.map((r) => ({
+    'Product Name': r.articleName,
+    'Channel Code (SKU)': r.code || '',
+    'UOM': `${r.packSize}${r.packUnit}/pack`,
+    'Base Price (₹)': r.basePrice ?? '',
+    'Grading %': r.gradingPercent ?? 0,
+    'Vendor Margin %': r.vendorMarginPercent ?? 0,
+    'Packaging (₹)': r.packaging ?? 0,
+    'Labour (₹)': r.labour ?? 0,
+    'Transportation (₹)': r.transportation ?? 0,
+    'Final Price (₹)': r.finalPrice ?? '',
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(sheetRows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Pricing');
+  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([wbout], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `fnv-pricing-sheet-${new Date().toISOString().split('T')[0]}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function PricingCard({ article, config, onUpdate }) {
+  const [grading, setGrading] = useState(String(config?.gradingPercent ?? 0));
+  const [vendorMargin, setVendorMargin] = useState(String(config?.vendorMarginPercent ?? 0));
+  const [packaging, setPackaging] = useState(String(config?.packaging ?? 0));
+  const [labour, setLabour] = useState(String(config?.labour ?? 0));
+  const [transportation, setTransportation] = useState(String(config?.transportation ?? 0));
+
+  useEffect(() => {
+    setGrading(String(config?.gradingPercent ?? 0));
+    setVendorMargin(String(config?.vendorMarginPercent ?? 0));
+    setPackaging(String(config?.packaging ?? 0));
+    setLabour(String(config?.labour ?? 0));
+    setTransportation(String(config?.transportation ?? 0));
+  }, [config]);
+
+  const commit = (field, value) => onUpdate(article.key, { [field]: Number(value) || 0 });
+  const basePrice = article.basePrice;
+  const finalPrice = computeFinalPrice(basePrice, {
+    gradingPercent: Number(grading) || 0, vendorMarginPercent: Number(vendorMargin) || 0,
+    packaging: Number(packaging) || 0, labour: Number(labour) || 0, transportation: Number(transportation) || 0,
+  });
+
+  const row = (label, value, setValue, field) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+      <span style={{ fontSize: 11, color: MUTED }}>{label}</span>
+      <input
+        type="number" value={value} onChange={(e) => setValue(e.target.value)} onBlur={(e) => commit(field, e.target.value)}
+        style={{ width: 80, boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 12, padding: '5px 8px', textAlign: 'right' }}
+      />
+    </div>
+  );
+
+  return (
+    <Card style={{ marginBottom: 12 }}>
+      <div style={{ fontWeight: 800, fontSize: 14 }}>{article.articleName}</div>
+      <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{article.code || 'No code'} · {article.packSize}{article.packUnit}/pack</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+        <span style={{ fontSize: 11, color: MUTED, fontWeight: 700 }}>BASE PRICE</span>
+        <span style={{ fontWeight: 700, color: basePrice == null ? MUTED : LEAF }}>{basePrice == null ? 'No purchase yet' : `₹${basePrice.toFixed(2)}`}</span>
+      </div>
+      {row('Grading %', grading, setGrading, 'gradingPercent')}
+      {row('Vendor margin %', vendorMargin, setVendorMargin, 'vendorMarginPercent')}
+      {row('Packaging (₹)', packaging, setPackaging, 'packaging')}
+      {row('Labour (₹)', labour, setLabour, 'labour')}
+      {row('Transportation (₹)', transportation, setTransportation, 'transportation')}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: INK }}>FINAL PRICE</span>
+        <span style={{ fontWeight: 800, fontSize: 15, color: finalPrice == null ? MUTED : TOMATO }}>{finalPrice == null ? '—' : `₹${finalPrice.toFixed(2)}`}</span>
+      </div>
+    </Card>
+  );
+}
+
+function PricingTab({ orders, items, purchases, pricingConfig, onUpdate }) {
+  const [search, setSearch] = useState('');
+  const [channelFilter, setChannelFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+
+  const articles = useMemo(() => buildPricingArticles(orders, items, purchases), [orders, items, purchases]);
+  const configByKey = useMemo(() => { const map = {}; pricingConfig.forEach((c) => { map[c.id] = c; }); return map; }, [pricingConfig]);
+  const categoriesPresent = useMemo(() => ['ALL', ...Array.from(new Set(articles.map((a) => a.category).filter(Boolean)))], [articles]);
+
+  const filteredArticles = articles
+    .filter((a) => !search.trim() || a.articleName.toLowerCase().includes(search.trim().toLowerCase()))
+    .filter((a) => channelFilter === 'ALL' || a.platform === channelFilter)
+    .filter((a) => categoryFilter === 'ALL' || a.category === categoryFilter);
+
+  const rowsForExport = filteredArticles.map((a) => {
+    const c = configByKey[a.key];
+    const gradingPercent = c?.gradingPercent ?? 0, vendorMarginPercent = c?.vendorMarginPercent ?? 0;
+    const packaging = c?.packaging ?? 0, labour = c?.labour ?? 0, transportation = c?.transportation ?? 0;
+    const finalPrice = computeFinalPrice(a.basePrice, { gradingPercent, vendorMarginPercent, packaging, labour, transportation });
+    return { ...a, gradingPercent, vendorMarginPercent, packaging, labour, transportation, finalPrice };
+  });
+
+  return (
+    <div style={{ padding: 16 }}>
+      <Card style={{ marginBottom: 12 }}>
+        <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><IndianRupee size={15} /> Pricing</div>
+        <div style={hint}>Base price is fetched from the latest purchase price × pack size. Grading % and vendor margin % apply on the base price; packaging, labour and transportation are flat amounts.</div>
+        <Field placeholder="Search article..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ marginBottom: 8 }} />
+        <div style={smallLabel}>CHANNEL</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 4 }}>
+          <Chip label="All" active={channelFilter === 'ALL'} onClick={() => setChannelFilter('ALL')} />
+          {PLATFORMS.map((p) => <Chip key={p} label={p} active={channelFilter === p} onClick={() => setChannelFilter(p)} />)}
+        </div>
+        <div style={smallLabel}>CATEGORY</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 10 }}>
+          {categoriesPresent.map((c) => <Chip key={c} label={c === 'ALL' ? 'All' : c} active={categoryFilter === c} onClick={() => setCategoryFilter(c)} />)}
+        </div>
+        <PrimaryBtn onClick={() => downloadPricingSheet(rowsForExport)}>Download pricing sheet</PrimaryBtn>
+      </Card>
+
+      {filteredArticles.map((a) => (
+        <PricingCard key={a.key} article={a} config={configByKey[a.key]} onUpdate={onUpdate} />
+      ))}
+      {filteredArticles.length === 0 && <div style={hint}>No indent-imported articles match this filter.</div>}
+    </div>
+  );
+}
+
+function ProfitLossDayCard({ day, channel, records, grnReportsForDay, onUploadGrn }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fileError, setFileError] = useState('');
+  const fileInputRef = useRef(null);
+
+  const totalDispatchQty = records.reduce((s, r) => s + (r.dispatchQty || 0), 0);
+  const totalDispatchValue = records.reduce((s, r) => s + (r.cost || 0), 0);
+
+  const handleGrnFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileError('');
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(evt.target.result, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        const rows = parseGrnRows(json);
+        if (rows.length === 0) { setFileError('No rows with a valid code/name and received quantity were found.'); return; }
+        onUploadGrn(channel, day.date, file.name, rows);
+      } catch (err) {
+        setFileError('Could not read this file. Please upload a valid .xlsx, .xls, or .csv GRN report.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const latestGrn = grnReportsForDay[0];
+  const grnComparison = useMemo(() => {
+    if (!latestGrn) return [];
+    const ours = {};
+    records.forEach((r) => {
+      const k = (r.code || r.articleName).toLowerCase();
+      ours[k] = ours[k] || { articleName: r.articleName, qty: 0, cost: 0, lastPrice: r.finalPricePerPack };
+      ours[k].qty += r.packsDispatched;
+      ours[k].cost += r.cost || 0;
+    });
+    return latestGrn.rows.map((g) => {
+      const k = (g.code || g.name).toLowerCase();
+      const match = ours[k];
+      const ourQty = match?.qty || 0;
+      const ourPrice = match?.lastPrice ?? null;
+      const ourCost = match?.cost || 0;
+      const grnCost = g.qty * g.price;
+      return {
+        key: k, articleName: match?.articleName || g.name || g.code,
+        grnQty: g.qty, ourQty: Math.round(ourQty * 100) / 100, qtyDiff: Math.round((g.qty - ourQty) * 100) / 100,
+        grnPrice: g.price, ourPrice, priceDiff: ourPrice == null ? null : Math.round((g.price - ourPrice) * 100) / 100,
+        costDiff: Math.round((grnCost - ourCost) * 100) / 100,
+      };
+    });
+  }, [latestGrn, records]);
+
+  return (
+    <Card style={{ marginBottom: 10, padding: 0, overflow: 'hidden' }}>
+      <div onClick={() => setExpanded((x) => !x)} style={{ padding: 12, cursor: 'pointer', background: expanded ? '#F6F3EA' : '#fff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>{day.date}</div>
+          <ChevronRight size={16} color={MUTED} style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />
+        </div>
+        <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+          <div>
+            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>INDENT QTY</div>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>{day.totalIndentQty}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>DISPATCHED</div>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>{Math.round(totalDispatchQty * 100) / 100}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>VALUE</div>
+            <div style={{ fontWeight: 800, fontSize: 13, color: TOMATO }}>₹{totalDispatchValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+          </div>
+        </div>
+      </div>
+
+      {expanded && (
+        <div style={{ borderTop: `1px solid ${LINE}`, padding: 12 }}>
+          {records.map((r, i) => (
+            <div key={i} style={{ borderTop: i > 0 ? `1px solid ${LINE}` : 'none', padding: '8px 0' }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{r.articleName}</div>
+              <div style={{ fontSize: 11, color: MUTED }}>{r.dispatchQty} {r.unit} · {r.packsDispatched} packs · {r.finalPricePerPack == null ? 'No price yet' : `₹${r.finalPricePerPack.toFixed(2)}/pack`}</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: r.cost == null ? MUTED : LEAF }}>{r.cost == null ? '—' : `₹${r.cost.toFixed(2)}`}</div>
+            </div>
+          ))}
+          {records.length === 0 && <div style={hint}>No dispatches priced for this day.</div>}
+
+          <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 10, paddingTop: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Upload GRN report — {day.date}</div>
+            <div style={hint}>Upload the channel's Goods Received Note for this day to compare against our numbers.</div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 8 }}
+            >
+              <Upload size={13} /> Upload GRN report
+            </button>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleGrnFile} style={{ display: 'none' }} />
+            {fileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: TOMATO, marginBottom: 8 }}><AlertCircle size={12} /> {fileError}</div>}
+            {latestGrn && (
+              <>
+                <div style={{ fontSize: 11, color: MUTED, marginBottom: 6 }}>Comparing: <strong style={{ color: INK }}>{latestGrn.fileName}</strong></div>
+                {grnComparison.map((c) => (
+                  <div key={c.key} style={{ borderTop: `1px solid ${LINE}`, padding: '6px 0' }}>
+                    <div style={{ fontWeight: 700, fontSize: 12 }}>{c.articleName}</div>
+                    <div style={{ fontSize: 11, color: MUTED }}>GRN {c.grnQty} vs Ours {c.ourQty} ({c.qtyDiff > 0 ? '+' : ''}{c.qtyDiff})</div>
+                    <div style={{ fontSize: 11, color: c.costDiff !== 0 ? TOMATO : LEAF, fontWeight: 700 }}>Cost diff: {c.costDiff > 0 ? '+' : ''}₹{c.costDiff.toFixed(2)}</div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ProfitLossTab({ orders, items, purchases, pricingConfig, dispatchLog, grnReports, onUploadGrn }) {
+  const [channel, setChannel] = useState(PLATFORMS[0]);
+
+  const articles = useMemo(() => buildPricingArticles(orders, items, purchases), [orders, items, purchases]);
+  const articlesByKey = useMemo(() => { const map = {}; articles.forEach((a) => { map[a.key] = a; }); return map; }, [articles]);
+  const configByKey = useMemo(() => { const map = {}; pricingConfig.forEach((c) => { map[c.id] = c; }); return map; }, [pricingConfig]);
+
+  const records = useMemo(() => {
+    const out = [];
+    dispatchLog.forEach((log) => {
+      (log.items || []).forEach((it) => {
+        const order = orders.find((o) => o.id === it.orderId);
+        const platform = it.platform || order?.platform;
+        const baseProduct = it.baseProduct || order?.product;
+        const packSize = it.packSize || order?.packSize;
+        const packUnit = it.packUnit || order?.packUnit;
+        if (!platform || !baseProduct || !packSize || !packUnit) return;
+        const key = `${baseProduct}__${platform}__${packSize}__${packUnit}`;
+        const article = articlesByKey[key];
+        const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key]) : null;
+        const packsDispatched = Math.round((it.dispatchQty / packSize) * 100) / 100;
+        const cost = finalPricePerPack == null ? null : Math.round(packsDispatched * finalPricePerPack * 100) / 100;
+        out.push({ date: log.date || '—', channel: platform, articleName: it.product, code: article?.code || '', dispatchQty: it.dispatchQty, unit: it.unit, packsDispatched, finalPricePerPack, cost });
+      });
+    });
+    return out;
+  }, [dispatchLog, orders, articlesByKey, configByKey]);
+
+  const indentQtyByDate = useMemo(() => {
+    const map = {};
+    orders.filter((o) => o.platform === channel && o.fulfilmentDate).forEach((o) => { map[o.fulfilmentDate] = (map[o.fulfilmentDate] || 0) + o.qty; });
+    return map;
+  }, [orders, channel]);
+
+  const channelRecords = records.filter((r) => r.channel === channel);
+  const days = useMemo(() => {
+    const dateSet = new Set([...channelRecords.map((r) => r.date), ...Object.keys(indentQtyByDate)]);
+    return Array.from(dateSet).sort((a, b) => b.localeCompare(a)).map((date) => ({
+      date, totalIndentQty: Math.round((indentQtyByDate[date] || 0) * 100) / 100, records: channelRecords.filter((r) => r.date === date),
+    }));
+  }, [channelRecords, indentQtyByDate]);
+
+  const channelTotalValue = channelRecords.reduce((s, r) => s + (r.cost || 0), 0);
+
+  return (
+    <div style={{ padding: 16 }}>
+      <Card style={{ marginBottom: 12 }}>
+        <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><TrendingUp size={15} /> Profit &amp; Loss</div>
+        <div style={hint}>Each day shows total indent qty, total dispatched, and total dispatch value (from Pricing). Tap a day to see the breakdown and upload that day's GRN report.</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 8 }}>
+          {PLATFORMS.map((p) => <Chip key={p} label={p} active={channel === p} onClick={() => setChannel(p)} />)}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: MUTED, fontWeight: 700 }}>{channel.toUpperCase()} TOTAL VALUE</span>
+          <span style={{ fontWeight: 800, fontSize: 16, color: TOMATO }}>₹{channelTotalValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
+        </div>
+      </Card>
+
+      {days.map((day) => (
+        <ProfitLossDayCard
+          key={day.date} day={day} channel={channel} records={day.records}
+          grnReportsForDay={grnReports.filter((g) => g.channel === channel && g.date === day.date).sort((a, b) => (b.uploadedAt || '').localeCompare(a.uploadedAt || ''))}
+          onUploadGrn={onUploadGrn}
+        />
+      ))}
+      {days.length === 0 && <div style={hint}>No {channel} indents or dispatches yet.</div>}
+    </div>
+  );
+}
+
 function PackagingTab({ orders, onAdvanceMany, packingProgress, onUpdatePackedQty }) {
   const [platformFilter, setPlatformFilter] = useState('All');
+
   const [dateFilter, setDateFilter] = useState('');
   const [selectedKey, setSelectedKey] = useState(null);
 
@@ -2169,50 +2698,83 @@ function PackagingTab({ orders, onAdvanceMany, packingProgress, onUpdatePackedQt
       {groupedByDate.map(({ date, targets }) => (
         <Card key={date} style={{ marginBottom: 12, padding: 10 }}>
           <div style={{ ...sectionTitle, marginBottom: 4 }}>{date === 'No date' ? 'No fulfilment date' : date}</div>
-          {targets.map((t) => {
-            const packed = packingProgress[t.key] || 0;
-            const shortfall = t.hasPack ? Math.max(0, t.targetPacks - packed) : 0;
-            return (
-              <div
-                key={t.key}
-                onClick={() => t.hasPack && setSelectedKey(t.key)}
-                style={{ borderTop: `1px solid ${LINE}`, padding: '7px 0', cursor: t.hasPack ? 'pointer' : 'default' }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{t.articleName || t.product}</div>
-                    <div style={{ fontSize: 10.5, color: MUTED }}>
-                      {[...t.platforms].join(' + ')}{t.hasPack ? ` · ${t.packSize}${t.packUnit}/pack` : ''}
-                    </div>
-                  </div>
-                  {t.hasPack ? (
-                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ color: LEAF, fontWeight: 800, fontSize: 13 }}>{t.targetPacks} packs</div>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: shortfall > 0 ? AMBER : LEAF }}>
-                        {packed}/{t.targetPacks}{shortfall > 0 ? ` · ${shortfall} short` : ' ✓'}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ color: LEAF, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>{t.qty} {t.unit}</div>
-                  )}
-                  {t.hasPack && <ChevronRight size={15} color={MUTED} style={{ flexShrink: 0 }} />}
-                </div>
-                {!t.hasPack && (
-                  t.pendingIds.length > 0 ? (
-                    <button onClick={() => onAdvanceMany(t.pendingIds, 'packed')} style={{ width: '100%', background: '#E6F1FB', color: '#1B5E8C', border: 'none', borderRadius: 8, padding: '6px 0', fontWeight: 700, fontSize: 11, marginTop: 5, cursor: 'pointer' }}>Mark {t.pendingIds.length} packed</button>
-                  ) : (
-                    <div style={{ color: LEAF, fontSize: 11, marginTop: 5, fontWeight: 600 }}>✓ All packed</div>
-                  )
-                )}
-              </div>
-            );
-          })}
+          {targets.map((t) => (
+            <PackagingInlineRow
+              key={t.key}
+              target={t}
+              packedQty={packingProgress[t.key] || 0}
+              onSave={(packedQty) => onUpdatePackedQty(t.key, packedQty, t.orderIds, t.targetPacks)}
+              onAdvanceMany={onAdvanceMany}
+              onOpenDetail={() => setSelectedKey(t.key)}
+            />
+          ))}
         </Card>
       ))}
       {groupedByDate.length === 0 && (
         <Card>
           <div style={hint}>Nothing to pack right now.</div>
         </Card>
+      )}
+    </div>
+  );
+}
+
+function PackagingInlineRow({ target: t, packedQty, onSave, onAdvanceMany, onOpenDetail }) {
+  const [value, setValue] = useState(String(packedQty || ''));
+  useEffect(() => { setValue(String(packedQty || '')); }, [packedQty]);
+
+  const entered = Number(value) || 0;
+  const shortfall = t.hasPack ? Math.max(0, t.targetPacks - entered) : 0;
+  const changed = entered !== packedQty;
+
+  return (
+    <div style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0' }}>
+      <div onClick={() => t.hasPack && onOpenDetail()} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, cursor: t.hasPack ? 'pointer' : 'default' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>{t.articleName || t.product}</div>
+          <div style={{ fontSize: 10.5, color: MUTED }}>
+            {[...t.platforms].join(' + ')}{t.hasPack ? ` · ${t.packSize}${t.packUnit}/pack` : ''}
+          </div>
+        </div>
+        {t.hasPack ? (
+          <div style={{ color: LEAF, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>{t.targetPacks} packs</div>
+        ) : (
+          <div style={{ color: LEAF, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>{t.qty} {t.unit}</div>
+        )}
+        {t.hasPack && <ChevronRight size={15} color={MUTED} style={{ flexShrink: 0 }} />}
+      </div>
+
+      {t.hasPack ? (
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, marginTop: 8 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>PACKED</div>
+            <input
+              type="number"
+              placeholder="0"
+              value={value}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setValue(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 13, padding: '6px 8px' }}
+            />
+          </div>
+          <div style={{ flex: 1, textAlign: 'right' }}>
+            <div style={{ fontSize: 9, color: shortfall > 0 ? TOMATO : MUTED, fontWeight: 700 }}>SHORTFALL</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: shortfall > 0 ? TOMATO : LEAF }}>{shortfall > 0 ? `${shortfall} short` : '✓'}</div>
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onSave(Math.max(0, entered)); }}
+            disabled={!changed}
+            style={{ background: changed ? LEAF : '#C9C2AE', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 12, fontWeight: 700, cursor: changed ? 'pointer' : 'default' }}
+          >
+            Save
+          </button>
+        </div>
+      ) : (
+        t.pendingIds.length > 0 ? (
+          <button onClick={() => onAdvanceMany(t.pendingIds, 'packed')} style={{ width: '100%', background: '#E6F1FB', color: '#1B5E8C', border: 'none', borderRadius: 8, padding: '6px 0', fontWeight: 700, fontSize: 11, marginTop: 5, cursor: 'pointer' }}>Mark {t.pendingIds.length} packed</button>
+        ) : (
+          <div style={{ color: LEAF, fontSize: 11, marginTop: 5, fontWeight: 600 }}>✓ All packed</div>
+        )
       )}
     </div>
   );
@@ -2281,6 +2843,38 @@ function PackagingDetail({ target, packedQty, onSave, onBack }) {
 }
 
 // ---------- Dispatch ----------
+function DispatchModal({ selectedCount, crates, onClose, onConfirm }) {
+  const [vehicleNo, setVehicleNo] = useState('');
+  const [driverName, setDriverName] = useState('');
+  const [cratesUsed, setCratesUsed] = useState('');
+  const [boxesUsed, setBoxesUsed] = useState('');
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 200 }}>
+      <div style={{ background: '#fff', borderRadius: '18px 18px 0 0', padding: '24px 20px 32px', width: '100%', maxWidth: 420 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <div style={{ fontWeight: 800, fontSize: 16, display: 'flex', alignItems: 'center', gap: 6 }}><TruckIcon size={16} /> Dispatch order</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, color: MUTED, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 14 }}>{selectedCount} order(s) selected</div>
+        <Field placeholder="Vehicle number" value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} />
+        <Field placeholder="Driver name" value={driverName} onChange={(e) => setDriverName(e.target.value)} />
+        <Field placeholder={`Crates (${crates.crates} in stock)`} type="number" value={cratesUsed} onChange={(e) => setCratesUsed(e.target.value)} />
+        <Field placeholder={`Boxes (${crates.boxes} in stock)`} type="number" value={boxesUsed} onChange={(e) => setBoxesUsed(e.target.value)} />
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button onClick={onClose} style={{ flex: 1, background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 10, padding: '11px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+          <button
+            onClick={() => onConfirm({ vehicleNo: vehicleNo.trim(), driverName: driverName.trim(), cratesUsed: Number(cratesUsed) || 0, boxesUsed: Number(boxesUsed) || 0 })}
+            style={{ flex: 2, background: LEAF, color: '#fff', border: 'none', borderRadius: 10, padding: '11px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+          >
+            Confirm dispatch
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }) {
   const pending = orders.filter((o) => o.status === 'pending');
   const packed = useMemo(() => orders
@@ -2289,20 +2883,19 @@ function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }
   [orders]);
   const dispatched = orders.filter((o) => o.status === 'dispatched');
 
+  const [view, setView] = useState('dispatch'); // 'dispatch' | 'history' | 'all'
   const [selected, setSelected] = useState([]);
   const [dispatchQtyById, setDispatchQtyById] = useState({});
   const [shortQtyById, setShortQtyById] = useState({});
-  const [vehicleNo, setVehicleNo] = useState('');
-  const [driverName, setDriverName] = useState('');
-  const [cratesUsed, setCratesUsed] = useState('');
-  const [boxesUsed, setBoxesUsed] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [awaitingOpen, setAwaitingOpen] = useState(false);
 
   const dispatchQtyFor = (o) => dispatchQtyById[o.id] !== undefined ? dispatchQtyById[o.id] : String(o.remaining);
   const shortQtyFor = (o) => shortQtyById[o.id] !== undefined ? shortQtyById[o.id] : '';
 
   const toggleSelect = (id) => setSelected((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
-  const submit = () => {
+  const submitDispatch = ({ vehicleNo, driverName, cratesUsed, boxesUsed }) => {
     if (selected.length === 0) return;
     const dispatchItems = selected.map((id) => {
       const o = packed.find((x) => x.id === id);
@@ -2312,84 +2905,121 @@ function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }
         shortQty: shortQtyById[id] || 0,
       };
     });
-    onDispatchBatch({ items: dispatchItems, vehicleNo: vehicleNo.trim(), driverName: driverName.trim(), cratesUsed: Number(cratesUsed) || 0, boxesUsed: Number(boxesUsed) || 0 });
-    setSelected([]); setDispatchQtyById({}); setShortQtyById({}); setVehicleNo(''); setDriverName(''); setCratesUsed(''); setBoxesUsed('');
+    onDispatchBatch({ items: dispatchItems, vehicleNo, driverName, cratesUsed, boxesUsed });
+    setSelected([]); setDispatchQtyById({}); setShortQtyById({}); setShowModal(false);
   };
 
   return (
     <div style={{ padding: 16 }}>
-      {pending.length > 0 && (
-        <Card style={{ marginBottom: 14 }}>
-          <div style={sectionTitle}>Awaiting packing ({pending.length})</div>
-          {pending.map((o) => (
-            <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
-              <div><div style={{ fontWeight: 700, fontSize: 13 }}>{o.id}</div><div style={{ fontSize: 12, color: MUTED }}>{o.articleName || o.product} · {o.qty} {o.unit}</div></div>
-              <button onClick={() => onAdvance(o.id, 'packed')} style={{ background: '#E6F1FB', color: '#1B5E8C', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Mark packed</button>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+        <Chip label="Dispatch" active={view === 'dispatch'} onClick={() => setView('dispatch')} />
+        <Chip label={`History (${dispatchLog.length})`} active={view === 'history'} onClick={() => setView('history')} />
+        <Chip label={`All dispatched (${dispatched.length})`} active={view === 'all'} onClick={() => setView('all')} />
+      </div>
+
+      {view === 'dispatch' && (
+        <>
+          {pending.length > 0 && (
+            <Card style={{ marginBottom: 14 }}>
+              <div onClick={() => setAwaitingOpen((x) => !x)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+                <div style={sectionTitle}>Awaiting packing</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ background: '#FBEFDC', color: AMBER, fontWeight: 800, fontSize: 12, padding: '3px 9px', borderRadius: 999 }}>{pending.length}</span>
+                  <ChevronRight size={15} color={MUTED} style={{ transform: awaitingOpen ? 'rotate(90deg)' : 'none' }} />
+                </div>
+              </div>
+              {awaitingOpen && pending.map((o) => (
+                <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
+                  <div><div style={{ fontWeight: 700, fontSize: 13 }}>{o.articleName || o.product}</div><div style={{ fontSize: 11, color: MUTED }}>{o.id} · {o.qty} {o.unit}</div></div>
+                  <button onClick={() => onAdvance(o.id, 'packed')} style={{ background: '#E6F1FB', color: '#1B5E8C', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Mark packed</button>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          <Card style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div style={sectionTitle}>Packed — ready ({packed.length})</div>
+                <div style={hint}>Dispatch qty defaults to what's left — lower it if only part is going now. Whatever isn't dispatched stays "packed" for next trip, unless marked short.</div>
+              </div>
+            </div>
+            {packed.map((o) => (
+              <div key={o.id} style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div onClick={() => toggleSelect(o.id)} style={{ width: 18, height: 18, borderRadius: 4, border: `1.5px solid ${LINE}`, background: selected.includes(o.id) ? LEAF : '#fff', cursor: 'pointer', flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{o.articleName || o.product}</div>
+                    <div style={{ fontSize: 11, color: MUTED }}>{o.id} · Remaining {o.remaining} {o.unit}</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6, marginLeft: 28 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>DISPATCH QTY</div>
+                    <input
+                      type="number"
+                      value={dispatchQtyFor(o)}
+                      onChange={(e) => setDispatchQtyById((p) => ({ ...p, [o.id]: e.target.value }))}
+                      style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 12, padding: '6px 8px' }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>SHORT QTY</div>
+                    <input
+                      type="number"
+                      placeholder="0"
+                      value={shortQtyFor(o)}
+                      onChange={(e) => setShortQtyById((p) => ({ ...p, [o.id]: e.target.value }))}
+                      style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${Number(shortQtyFor(o)) > 0 ? TOMATO : LINE}`, fontSize: 12, padding: '6px 8px', color: Number(shortQtyFor(o)) > 0 ? TOMATO : INK }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+            {packed.length === 0 && <div style={hint}>Nothing packed yet.</div>}
+          </Card>
+        </>
+      )}
+      {view === 'dispatch' && (
+        <div style={{ position: 'sticky', bottom: 0, background: BG, paddingTop: 10, marginTop: -10, marginLeft: -16, marginRight: -16, paddingLeft: 16, paddingRight: 16, paddingBottom: 4 }}>
+          <button
+            onClick={() => setShowModal(true)}
+            disabled={selected.length === 0}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: selected.length === 0 ? '#C9C2AE' : TOMATO, color: '#fff', border: 'none', borderRadius: 10, padding: '13px 0', fontWeight: 700, fontSize: 14, cursor: selected.length === 0 ? 'default' : 'pointer', boxShadow: '0 -4px 10px rgba(0,0,0,0.06)' }}
+          >
+            <TruckIcon size={15} /> Dispatch order{selected.length > 0 ? ` (${selected.length})` : ''}
+          </button>
+        </div>
+      )}
+
+      {view === 'history' && (
+        <Card>
+          <div style={sectionTitle}>Dispatch history ({dispatchLog.length})</div>
+          {dispatchLog.map((d) => (
+            <div key={d.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{d.id} · {d.vehicleNo}</div>
+              <div style={{ fontSize: 12, color: MUTED }}>{d.driverName} · {(d.orderIds || []).length} orders · {d.totalDispatchQty || 0} dispatched · {d.cratesUsed} crates, {d.boxesUsed} boxes · {d.time}</div>
             </div>
           ))}
+          {dispatchLog.length === 0 && <div style={hint}>No dispatches yet.</div>}
         </Card>
       )}
-      <Card style={{ marginBottom: 14 }}>
-        <div style={sectionTitle}>Packed — ready ({packed.length})</div>
-        <div style={hint}>Dispatch qty defaults to what's left — lower it if only part is going now. Whatever isn't dispatched stays "packed" for next trip, unless marked short.</div>
-        {packed.map((o) => (
-          <div key={o.id} style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div onClick={() => toggleSelect(o.id)} style={{ width: 18, height: 18, borderRadius: 4, border: `1.5px solid ${LINE}`, background: selected.includes(o.id) ? LEAF : '#fff', cursor: 'pointer', flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 13 }}>{o.id}</div>
-                <div style={{ fontSize: 12, color: MUTED }}>{o.articleName || o.product} · Remaining {o.remaining} {o.unit}</div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 6, marginLeft: 28 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>DISPATCH QTY</div>
-                <input
-                  type="number"
-                  value={dispatchQtyFor(o)}
-                  onChange={(e) => setDispatchQtyById((p) => ({ ...p, [o.id]: e.target.value }))}
-                  style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 12, padding: '6px 8px' }}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>SHORT QTY</div>
-                <input
-                  type="number"
-                  placeholder="0"
-                  value={shortQtyFor(o)}
-                  onChange={(e) => setShortQtyById((p) => ({ ...p, [o.id]: e.target.value }))}
-                  style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${Number(shortQtyFor(o)) > 0 ? TOMATO : LINE}`, fontSize: 12, padding: '6px 8px', color: Number(shortQtyFor(o)) > 0 ? TOMATO : INK }}
-                />
-              </div>
-            </div>
-          </div>
-        ))}
-        {packed.length === 0 && <div style={hint}>Nothing packed yet.</div>}
-      </Card>
-      <Card style={{ marginBottom: 14 }}>
-        <div style={sectionTitle}>Create dispatch</div>
-        <div style={hint}>{selected.length} order(s) selected</div>
-        <Field placeholder="Vehicle number" value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} />
-        <Field placeholder="Driver name" value={driverName} onChange={(e) => setDriverName(e.target.value)} />
-        <Field placeholder={`Crates (${crates.crates} in stock)`} type="number" value={cratesUsed} onChange={(e) => setCratesUsed(e.target.value)} />
-        <Field placeholder={`Boxes (${crates.boxes} in stock)`} type="number" value={boxesUsed} onChange={(e) => setBoxesUsed(e.target.value)} />
-        <PrimaryBtn onClick={submit} disabled={selected.length === 0}>Dispatch {selected.length || ''} order{selected.length !== 1 ? 's' : ''}</PrimaryBtn>
-      </Card>
-      <Card style={{ marginBottom: 14 }}>
-        <div style={sectionTitle}>Dispatch history ({dispatchLog.length})</div>
-        {dispatchLog.map((d) => (
-          <div key={d.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{d.id} · {d.vehicleNo}</div>
-            <div style={{ fontSize: 12, color: MUTED }}>{d.driverName} · {(d.orderIds || []).length} orders · {d.totalDispatchQty || 0} dispatched · {d.cratesUsed} crates, {d.boxesUsed} boxes · {d.time}</div>
-          </div>
-        ))}
-        {dispatchLog.length === 0 && <div style={hint}>No dispatches yet.</div>}
-      </Card>
-      {dispatched.length > 0 && (
+
+      {view === 'all' && (
         <Card>
           <div style={sectionTitle}>All dispatched ({dispatched.length})</div>
-          {dispatched.map((o) => <div key={o.id} style={{ fontSize: 12, color: MUTED, padding: '4px 0' }}>{o.id} · {o.articleName || o.product} · {o.qty} {o.unit}</div>)}
+          {dispatched.map((o) => (
+            <div key={o.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{o.articleName || o.product}</div>
+              <div style={{ fontSize: 11, color: MUTED }}>{o.qty} {o.unit} · {o.id}{o.shortQty > 0 ? ` · ${o.shortQty} ${o.unit} short` : ''}</div>
+            </div>
+          ))}
+          {dispatched.length === 0 && <div style={hint}>No dispatched orders yet.</div>}
         </Card>
+      )}
+
+      {showModal && (
+        <DispatchModal selectedCount={selected.length} crates={crates} onClose={() => setShowModal(false)} onConfirm={submitDispatch} />
       )}
     </div>
   );
@@ -2433,14 +3063,24 @@ function CratesTab({ crates, log, onAdjust }) {
 function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, onAddRole, onDeleteRole, onToggleRolePermission }) {
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [usernameError, setUsernameError] = useState('');
   const [roleId, setRoleId] = useState(roles[0]?.id || '');
   const [newRoleName, setNewRoleName] = useState('');
+  const [visiblePasswordId, setVisiblePasswordId] = useState(null);
   const PERMISSION_SECTIONS = NAV.map((n) => ({ key: n.key, label: n.label }));
 
   const submitUser = () => {
-    if (!name.trim() || !roleId) return;
-    onAddUser({ id: `U-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: name.trim(), contact: contact.trim(), roleId, status: 'active' });
-    setName(''); setContact('');
+    if (!name.trim() || !roleId || !username.trim() || !password.trim()) return;
+    const uname = username.trim().toLowerCase();
+    if (users.some((u) => (u.username || '').toLowerCase() === uname)) {
+      setUsernameError('This username is already taken.');
+      return;
+    }
+    setUsernameError('');
+    onAddUser({ id: `U-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: name.trim(), contact: contact.trim(), roleId, status: 'active', username: uname, password: password.trim() });
+    setName(''); setContact(''); setUsername(''); setPassword('');
   };
   const submitRole = () => {
     if (!newRoleName.trim()) return;
@@ -2457,6 +3097,10 @@ function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, on
         <Field placeholder="Phone / email" value={contact} onChange={(e) => setContact(e.target.value)} />
         <div style={smallLabel}>Role</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 10 }}>{roles.map((r) => <Chip key={r.id} label={r.name} active={roleId === r.id} onClick={() => setRoleId(r.id)} />)}</div>
+        <div style={smallLabel}>Login credentials</div>
+        <Field placeholder="Username" value={username} onChange={(e) => { setUsername(e.target.value); setUsernameError(''); }} />
+        {usernameError && <div style={{ fontSize: 11, color: TOMATO, marginTop: -6, marginBottom: 8 }}>{usernameError}</div>}
+        <Field placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
         <PrimaryBtn onClick={submitUser}>Add employee</PrimaryBtn>
       </Card>
 
@@ -2469,6 +3113,19 @@ function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, on
               <button onClick={() => onDeleteUser(u.id)} style={{ background: 'none', border: 'none', color: TOMATO, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Remove</button>
             </div>
             <div style={{ fontSize: 12, color: MUTED }}>{u.contact || '—'}</div>
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
+              Username: <strong style={{ color: INK }}>{u.username || '—'}</strong>
+              {u.password && (
+                <>
+                  {' · Password: '}
+                  <span style={{ fontFamily: 'monospace' }}>{visiblePasswordId === u.id ? u.password : '••••••••'}</span>
+                  {' '}
+                  <button onClick={() => setVisiblePasswordId(visiblePasswordId === u.id ? null : u.id)} style={{ background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
+                    {visiblePasswordId === u.id ? 'Hide' : 'Show'}
+                  </button>
+                </>
+              )}
+            </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', marginTop: 6 }}>{roles.map((r) => <Chip key={r.id} label={r.name} active={u.roleId === r.id} onClick={() => onUpdateUser(u.id, { roleId: r.id })} />)}</div>
             <button onClick={() => onUpdateUser(u.id, { status: u.status === 'active' ? 'inactive' : 'active' })} style={{ background: u.status === 'active' ? '#EAF3DE' : '#F3E7E2', color: u.status === 'active' ? LEAF_DARK : TOMATO, border: 'none', borderRadius: 999, padding: '4px 10px', fontSize: 11, fontWeight: 700, marginTop: 8, cursor: 'pointer' }}>
               {u.status === 'active' ? 'Active' : 'Inactive'}
