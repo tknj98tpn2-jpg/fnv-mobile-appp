@@ -47,6 +47,12 @@ const BG = '#F6F3EA';
 
 const PLATFORMS = ['Blinkit', 'Flipkart'];
 
+// Phase 1 of multi-city support: each business location gets its own Items and
+// Vendors (Orders, Purchases, Dispatch, P&L follow in later phases). Records made
+// before this existed have no `city` field — they're treated as belonging to the
+// first city here so nothing already in the database disappears.
+const CITIES = ['Jabalpur', 'Satna', 'Indore'];
+
 function newAliasId() {
   return `AL-${Date.now().toString(36).toUpperCase().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
 }
@@ -89,6 +95,25 @@ const NAV = [
   { key: 'crates', label: 'Crates & boxes', icon: Boxes },
   { key: 'users', label: 'Users & Roles', icon: Users },
 ];
+
+// Keeps a filter's value in localStorage so it survives leaving the section (or the
+// whole page reloading) — it only ever changes when the person picks something new.
+function usePersistedState(key, defaultValue) {
+  const [state, setState] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(key);
+      return saved !== null ? JSON.parse(saved) : defaultValue;
+    } catch {
+      return defaultValue;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(state));
+    } catch {}
+  }, [key, state]);
+  return [state, setState];
+}
 
 function pickField(rowObj, candidates) {
   const keys = Object.keys(rowObj);
@@ -168,7 +193,7 @@ export default function FnvMobilePreview() {
   const [vendors, setVendors] = useState([]);
   const [vendorLedger, setVendorLedger] = useState([]);  // { id, vendorId, itemName, qty, unit, unitPrice, total, payment, date, note }
   const [placedOrders, setPlacedOrders] = useState([]); // { id, name, date, items: [{itemId, itemName, uom, qty, toBuy}] }
-  const [crates, setCrates] = useState({ crates: 180, boxes: 260 });
+  const [cratesByCity, setCratesByCity] = useState({});
   const [crateLog, setCrateLog] = useState([]);
   const [dispatchLog, setDispatchLog] = useState([]);
   const [indentBatches, setIndentBatches] = useState([]);
@@ -177,6 +202,7 @@ export default function FnvMobilePreview() {
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
   const [dbReady, setDbReady] = useState(false);
+  const [selectedCity, setSelectedCity] = usePersistedState('fnv_selected_city', CITIES[0]);
 
   useEffect(() => {
     // Seed collections on first load, then subscribe
@@ -203,15 +229,23 @@ export default function FnvMobilePreview() {
       })
     );
 
-    // crates is a single doc
+    // crates — one doc per city (legacy installs had a single flat {crates,boxes} object,
+    // which we treat as belonging to the first city so nothing is lost)
     const unsub2 = onSnapshot(doc(db, 'settings', 'crates'), (d) => {
-      if (d.exists()) setCrates(d.data());
+      if (d.exists()) {
+        const data = d.data();
+        if (typeof data.crates === 'number') {
+          setCratesByCity({ [CITIES[0]]: { crates: data.crates, boxes: data.boxes } });
+        } else {
+          setCratesByCity(data);
+        }
+      }
     });
 
     // packing progress — keyed by target id, stored as a map for O(1) lookup
     const unsub3 = onSnapshot(collection(db, 'packingProgress'), (snap) => {
       const map = {};
-      snap.docs.forEach((d) => { map[d.id] = d.data().packedQty || 0; });
+      snap.docs.forEach((d) => { map[d.id] = { packedQty: d.data().packedQty || 0, shortQty: d.data().shortQty || 0 }; });
       setPackingProgress(map);
     });
 
@@ -222,8 +256,8 @@ export default function FnvMobilePreview() {
   const fbDelete = (col, id)         => deleteDoc(doc(db, col, id));
   const fbSetDoc = (col, id, obj)    => setDoc(doc(db, col, id), obj);
 
-  const addItem = (it) => fbSetDoc('items', it.id, it);
-  const addItemsBulk = (newItems) => { const b = writeBatch(db); newItems.forEach((it) => b.set(doc(db,'items',it.id), it)); b.commit(); };
+  const addItem = (it) => fbSetDoc('items', it.id, { ...it, city: selectedCity });
+  const addItemsBulk = (newItems) => { const b = writeBatch(db); newItems.forEach((it) => b.set(doc(db,'items',it.id), { ...it, city: selectedCity })); b.commit(); };
   const updateItem = (id, u) => fbUpdate('items', id, u);
   const deleteItem = (id) => fbDelete('items', id);
   // Different articles from the same channel can map to the same base item but have
@@ -257,14 +291,13 @@ export default function FnvMobilePreview() {
     const it = items.find((x) => x.id === itemId); if (!it) return;
     fbUpdate('items', itemId, { aliases: (it.aliases || []).map((a) => (a.id === aliasId ? { ...a, ...patch } : a)) });
   };
-  const importOrder = (o) => fbSetDoc('orders', o.id, o);
-  const advanceStatus = (id, next) => fbUpdate('orders', id, { status: next });
+  const importOrder = (o) => fbSetDoc('orders', o.id, { ...o, city: selectedCity });
   const advanceMany = (ids, next) => { const b = writeBatch(db); ids.forEach((id) => b.update(doc(db,'orders',id), { status: next })); b.commit(); };
-  const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p });
-  const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r })); b.commit(); };
+  const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p, city: selectedCity });
+  const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: selectedCity })); b.commit(); };
   const removePurchasesByIds = (ids) => { const b = writeBatch(db); ids.forEach((id) => b.delete(doc(db,'purchases',id))); b.commit(); };
   const recordStockCount = (itemId, itemName, unit, date, closingQty) => {
-    fbSetDoc('stockCounts', `${itemId}__${date}`, { id: `${itemId}__${date}`, itemId, itemName, unit, date, closingQty: Number(closingQty) || 0 });
+    fbSetDoc('stockCounts', `${itemId}__${date}`, { id: `${itemId}__${date}`, itemId, itemName, unit, date, closingQty: Number(closingQty) || 0, city: selectedCity });
   };
   const updatePricingConfig = (key, patch) => {
     const existing = pricingConfig.find((p) => p.id === key);
@@ -277,10 +310,11 @@ export default function FnvMobilePreview() {
   const addRecipe = (r) => fbSetDoc('recipes', r.id, r);
   const deleteRecipe = (id) => fbDelete('recipes', id);
   const adjustCrates = async (type, delta, note) => {
-    const next = { ...crates, [type]: Math.max(0, crates[type] + delta) };
-    await setDoc(doc(db, 'settings', 'crates'), next);
+    const current = cratesByCity[selectedCity] || { crates: 0, boxes: 0 };
+    const next = { ...current, [type]: Math.max(0, current[type] + delta) };
+    await setDoc(doc(db, 'settings', 'crates'), { ...cratesByCity, [selectedCity]: next });
     const logId = `CL-${Date.now().toString(36).toUpperCase().slice(-6)}`;
-    fbSetDoc('crateLog', logId, { id: logId, type, delta, note: note || '', time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) });
+    fbSetDoc('crateLog', logId, { id: logId, type, delta, note: note || '', time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), city: selectedCity });
   };
   // Supports partial dispatch: an order's full qty doesn't have to go out in one trip.
   // Each entry carries how much is actually leaving now (dispatchQty) and how much is
@@ -314,16 +348,39 @@ export default function FnvMobilePreview() {
     if (cratesUsed > 0) adjustCrates('crates', -cratesUsed, `Dispatch ${vehicleNo || ''}`.trim());
     if (boxesUsed > 0) adjustCrates('boxes', -boxesUsed, `Dispatch ${vehicleNo || ''}`.trim());
     const did = `DSP-${Date.now().toString(36).toUpperCase().slice(-6)}`;
-    fbSetDoc('dispatchLog', did, { id: did, date: dispatchDate, items: logItems, orderIds: logItems.map((li) => li.orderId), totalDispatchQty, vehicleNo: vehicleNo || '—', driverName: driverName || '—', cratesUsed, boxesUsed, time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) });
+    fbSetDoc('dispatchLog', did, { id: did, date: dispatchDate, items: logItems, orderIds: logItems.map((li) => li.orderId), totalDispatchQty, vehicleNo: vehicleNo || '—', driverName: driverName || '—', cratesUsed, boxesUsed, time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), city: selectedCity });
   };
-  const createIndentBatch = (b) => fbSetDoc('indentBatches', b.id, b);
+  const createIndentBatch = (b) => fbSetDoc('indentBatches', b.id, { ...b, city: selectedCity });
   const updateIndentBatch = (batchId, patch) => fbUpdate('indentBatches', batchId, patch);
-  const updatePackedQty = (key, packedQty, orderIds, targetPacks) => {
-    fbSetDoc('packingProgress', key, { packedQty });
-    const complete = targetPacks > 0 && packedQty >= targetPacks;
-    orderIds.forEach((id) => {
-      const o = orders.find((x) => x.id === id);
-      if (o && o.status !== 'dispatched') fbUpdate('orders', id, { status: complete ? 'packed' : 'pending' });
+  // An article is only ever fully resolved two ways: fully packed, or packed+short
+  // adding up to the full target — there's no partial/unresolved state that reaches
+  // Dispatch. Packing progress is tracked per aggregated target (it can combine several
+  // orders sharing the same product/platform/pack size/date), so the packed vs short
+  // split is distributed across those orders in proportion to each order's own pack
+  // count — an order that ends up with zero packed (fully short) never becomes
+  // dispatchable; its whole quantity is recorded as short right away instead of sitting
+  // in "packed" with nothing to send.
+  const updatePackedQty = (key, packedQty, shortQty, orderIds, targetPacks) => {
+    fbSetDoc('packingProgress', key, { packedQty, shortQty });
+    const resolved = targetPacks > 0 && (packedQty + shortQty) >= targetPacks;
+    const targetOrders = orderIds.map((id) => orders.find((o) => o.id === id)).filter(Boolean);
+    const totalPacks = targetOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0) || 1;
+    targetOrders.forEach((o) => {
+      if (o.status === 'dispatched') return;
+      if (!resolved) {
+        if (o.status !== 'pending') fbUpdate('orders', o.id, { status: 'pending' });
+        return;
+      }
+      const share = (Number(o.packQty) || 0) / totalPacks;
+      const myShortPacks = Math.round(shortQty * share * 100) / 100;
+      const myPackedPacks = Math.round(packedQty * share * 100) / 100;
+      const packSize = Number(o.packSize) || 1;
+      const myShortQty = Math.round(myShortPacks * packSize * 100) / 100;
+      if (myPackedPacks <= 0) {
+        fbUpdate('orders', o.id, { status: 'dispatched', dispatchedQty: 0, shortQty: myShortQty });
+      } else {
+        fbUpdate('orders', o.id, { status: 'packed', shortQty: myShortQty });
+      }
     });
   };
   const toggleReleaseBatch = (batchId, purchaseDate) => {
@@ -347,7 +404,7 @@ export default function FnvMobilePreview() {
     const r = roles.find((x) => x.id === roleId); if (!r) return;
     fbUpdate('roles', roleId, { permissions: { ...r.permissions, [key]: val } });
   };
-  const addVendor = (v) => fbSetDoc('vendors', v.id, v);
+  const addVendor = (v) => fbSetDoc('vendors', v.id, { ...v, city: selectedCity });
   const savePlacedOrder = (order) => fbSetDoc('placedOrders', order.id, order);
   const updatePlacedOrder = (id, itemsList) => fbUpdate('placedOrders', id, { items: itemsList });
   const deletePlacedOrder = (id) => fbDelete('placedOrders', id);
@@ -375,6 +432,15 @@ export default function FnvMobilePreview() {
   };
 
   const currentNav = NAV.find((n) => n.key === tab);
+  const cityItems = items.filter((it) => (it.city || CITIES[0]) === selectedCity);
+  const cityVendors = vendors.filter((v) => (v.city || CITIES[0]) === selectedCity);
+  const cityOrders = orders.filter((o) => (o.city || CITIES[0]) === selectedCity);
+  const cityPurchases = purchases.filter((p) => (p.city || CITIES[0]) === selectedCity);
+  const cityIndentBatches = indentBatches.filter((b) => (b.city || CITIES[0]) === selectedCity);
+  const cityStockCounts = stockCounts.filter((sc) => (sc.city || CITIES[0]) === selectedCity);
+  const cityDispatchLog = dispatchLog.filter((d) => (d.city || CITIES[0]) === selectedCity);
+  const cityCrates = cratesByCity[selectedCity] || { crates: 0, boxes: 0 };
+  const cityCrateLog = crateLog.filter((l) => (l.city || CITIES[0]) === selectedCity);
 
   if (!dbReady) return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
@@ -397,28 +463,28 @@ export default function FnvMobilePreview() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {tab === 'dashboard' && <DashboardTab orders={orders} purchases={purchases} items={items} crates={crates} />}
-          {tab === 'items' && <ItemsTab items={items} onAdd={addItem} onAddBulk={addItemsBulk} onUpdate={updateItem} onDelete={deleteItem} />}
+          {tab === 'dashboard' && <DashboardTab orders={cityOrders} purchases={cityPurchases} items={cityItems} crates={cityCrates} />}
+          {tab === 'items' && <ItemsTab items={cityItems} onAdd={addItem} onAddBulk={addItemsBulk} onUpdate={updateItem} onDelete={deleteItem} />}
           {tab === 'vendors' && (
-            <VendorsTab items={items} vendors={vendors} vendorLedger={vendorLedger} placedOrders={placedOrders} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} />
+            <VendorsTab items={cityItems} vendors={cityVendors} vendorLedger={vendorLedger} placedOrders={placedOrders} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} />
           )}
           {tab === 'cutprocess' && <CutProcessTab items={items} recipes={recipes} orders={orders} onAddRecipe={addRecipe} onDeleteRecipe={deleteRecipe} onAddPurchaseRequirements={addPurchaseRequirements} />}
           {tab === 'orders' && (
             <OrdersTab
-              orders={orders} items={items} indentBatches={indentBatches}
+              orders={cityOrders} items={cityItems} indentBatches={cityIndentBatches}
               onImport={importOrder} onAddItem={addItem} onEnsureAlias={ensureAliasForCode} onUpdateAlias={updateAliasById}
               onCreateIndentBatch={createIndentBatch} onToggleReleaseBatch={toggleReleaseBatch}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={purchases} orders={orders} items={items} recipes={recipes} vendors={vendors} vendorLedger={vendorLedger} stockCounts={stockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={indentBatches} />}
-          {tab === 'stockcount' && <StockCountTab items={items} stockCounts={stockCounts} onRecord={recordStockCount} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} recipes={recipes} vendors={cityVendors} vendorLedger={vendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} />}
+          {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} onRecord={recordStockCount} />}
           {tab === 'pricing' && <PricingTab orders={orders} items={items} purchases={purchases} pricingConfig={pricingConfig} onUpdate={updatePricingConfig} />}
           {tab === 'profitloss' && <ProfitLossTab orders={orders} items={items} purchases={purchases} pricingConfig={pricingConfig} dispatchLog={dispatchLog} grnReports={grnReports} indentBatches={indentBatches} onUploadGrn={uploadGrnReport} onUpdateIndentBatch={updateIndentBatch} />}
-          {tab === 'packaging' && <PackagingTab orders={orders} items={items} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} />}
+          {tab === 'packaging' && <PackagingTab orders={cityOrders} items={cityItems} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} />}
           {tab === 'dispatch' && (
-            <DispatchTab orders={orders} crates={crates} dispatchLog={dispatchLog} onAdvance={advanceStatus} onDispatchBatch={dispatchBatch} />
+            <DispatchTab orders={cityOrders} crates={cityCrates} dispatchLog={cityDispatchLog} onDispatchBatch={dispatchBatch} />
           )}
-          {tab === 'crates' && <CratesTab crates={crates} log={crateLog} onAdjust={adjustCrates} />}
+          {tab === 'crates' && <CratesTab crates={cityCrates} log={cityCrateLog} onAdjust={adjustCrates} />}
           {tab === 'users' && (
             <UsersRolesTab
               users={users} roles={roles}
@@ -437,6 +503,16 @@ export default function FnvMobilePreview() {
                   <span style={{ color: '#fff', fontWeight: 800, fontSize: 14 }}>FNV Admin</span>
                 </div>
                 <button onClick={() => setDrawerOpen(false)} style={{ background: 'none', border: 'none', color: '#B7C2B2', cursor: 'pointer' }}><X size={18} /></button>
+              </div>
+              <div style={{ padding: '12px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                <p style={{ margin: '0 0 6px', fontSize: 10, color: '#8A968A', fontWeight: 700, letterSpacing: 0.5 }}>CITY</p>
+                <select
+                  value={selectedCity}
+                  onChange={(e) => setSelectedCity(e.target.value)}
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, padding: '8px', fontSize: 13, fontWeight: 700 }}
+                >
+                  {CITIES.map((c) => <option key={c} value={c} style={{ color: INK }}>{c}</option>)}
+                </select>
               </div>
               <div style={{ padding: '10px 8px', flex: 1, overflowY: 'auto' }}>
                 {NAV.map((n) => (
@@ -1625,7 +1701,10 @@ function OrdersListCard({ orders, indentBatches }) {
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS', 'CUT'];
 
 function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches }) {
-  const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
+  const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
+  const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
+  const [fulfilmentDateFilter, setFulfilmentDateFilter] = usePersistedState('fnv_purchase_fulfilmentdate', 'ALL'); // 'ALL' = All Purchase
   const [bufferPercent, setBufferPercent] = useState('0');
   const [purchasedDate, setPurchasedDate] = useState('');
   const [selectedItemId, setSelectedItemId] = useState(null);
@@ -1645,7 +1724,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
   const [purchaseQty, setPurchaseQty] = useState('');
   const [unitPrice, setUnitPrice] = useState('');
   const [totalInput, setTotalInput] = useState('');
-  const [paymentMode, setPaymentMode] = useState('cash');
+  const [paymentMode, setPaymentMode] = useState('credit');
   const [purchaseNote, setPurchaseNote] = useState('');
   const [purchaseDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
@@ -1704,6 +1783,16 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
   // directly — their recipe's raw ingredients do. Demand for an output
   // item is expanded into ingredient demand, compiled across every
   // recipe/order that needs that same ingredient.
+  const availableFulfilmentDates = useMemo(() => {
+    const releasedBatchIds = new Set(indentBatches.filter((b) => b.released).map((b) => b.id));
+    const dates = new Set();
+    orders
+      .filter((o) => o.status !== 'dispatched')
+      .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
+      .forEach((o) => { if (o.fulfilmentDate) dates.add(o.fulfilmentDate); });
+    return Array.from(dates).sort();
+  }, [orders, indentBatches]);
+
   const neededByProduct = useMemo(() => {
     const map = {};
     const addDemand = (name, qty, unit) => {
@@ -1717,6 +1806,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     orders
       .filter((o) => o.status !== 'dispatched')
       .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
+      .filter((o) => fulfilmentDateFilter === 'ALL' || o.fulfilmentDate === fulfilmentDateFilter)
       .forEach((o) => {
         const matchingRecipes = recipes.filter((r) => items.find((it) => it.id === r.outputItemId)?.name === o.product);
         if (matchingRecipes.length > 0) {
@@ -1733,7 +1823,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
         }
       });
     return map;
-  }, [orders, recipes, items, indentBatches]);
+  }, [orders, recipes, items, indentBatches, fulfilmentDateFilter]);
 
   // "Available stock" = latest nightly stock count (if any) as baseline, plus every
   // actual completed purchase made since — "requirement" rows (from released indents /
@@ -1760,9 +1850,11 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
 
   const filteredItems = useMemo(() => {
     const buffer = Number(bufferPercent) || 0;
-    return items
+    const vendorItemIds = vendorFilterId ? new Set(vendors.find((v) => v.id === vendorFilterId)?.itemIds || []) : null;
+    let result = items
       .filter((it) => neededByProduct[it.name])
       .filter((it) => categoryFilter === 'ALL' || it.category === categoryFilter)
+      .filter((it) => !vendorItemIds || vendorItemIds.has(it.id))
       .map((it) => {
         const needed = neededByProduct[it.name].needed;
         const unit = neededByProduct[it.name].unit;
@@ -1772,7 +1864,10 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
       })
       // Already sufficiently stocked (stock beats needed by more than the buffer %) — no need to buy.
       .filter((it) => it.stock <= it.needed * (1 + buffer / 100));
-  }, [items, neededByProduct, categoryFilter, stockByItem, bufferPercent]);
+    if (qtySort === 'asc') result = result.slice().sort((a, b) => a.toBuy - b.toBuy);
+    else if (qtySort === 'desc') result = result.slice().sort((a, b) => b.toBuy - a.toBuy);
+    return result;
+  }, [items, neededByProduct, categoryFilter, vendorFilterId, vendors, stockByItem, bufferPercent, qtySort]);
 
   const purchasedList = useMemo(() => {
     return purchases
@@ -1984,8 +2079,8 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     );
   }
 
-  const hasActiveFilters = categoryFilter !== 'ALL' || Number(bufferPercent) !== 0;
-  const clearFilters = () => { setCategoryFilter('ALL'); setBufferPercent('0'); };
+  const hasActiveFilters = categoryFilter !== 'ALL' || Number(bufferPercent) !== 0 || !!vendorFilterId || qtySort !== 'none' || fulfilmentDateFilter !== 'ALL';
+  const clearFilters = () => { setCategoryFilter('ALL'); setBufferPercent('0'); setVendorFilterId(''); setQtySort('none'); setFulfilmentDateFilter('ALL'); };
 
   const confirmShareOrder = () => {
     const orderItems = filteredItems
@@ -2028,18 +2123,28 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
   return (
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <select value={vendorFilterId} onChange={(e) => setVendorFilterId(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+            <option value="">All vendors</option>
+            {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+            {PURCHASE_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          <select value={qtySort} onChange={(e) => setQtySort(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+            <option value="none">Default sort</option>
+            <option value="asc">Qty: Low-High</option>
+            <option value="desc">Qty: High-Low</option>
+          </select>
+          <select value={fulfilmentDateFilter} onChange={(e) => setFulfilmentDateFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+            <option value="ALL">All Purchase</option>
+            {availableFulfilmentDates.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
-            <span style={{ fontSize: 11, color: MUTED }}>Category</span>
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              style={{ width: '100%', boxSizing: 'border-box', marginTop: 4, padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, color: INK, background: '#fff' }}
-            >
-              {PURCHASE_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-          <div style={{ width: 90 }}>
             <span style={{ fontSize: 11, color: MUTED }}>Buffer %</span>
             <Field type="number" placeholder="0" value={bufferPercent} onChange={(e) => setBufferPercent(e.target.value)} style={{ marginBottom: 0 }} />
           </div>
@@ -2283,18 +2388,25 @@ function buildPricingArticles(orders, items, purchases) {
 // One indent (batch) may have several articles that don't yet have a purchase price —
 // those are simply left out of the running cost until they do (this is what makes the
 // batch's total climb from "day one" partial toward a complete figure as purchases happen).
+// Quantity marked short at packing time is subtracted from the pack count before costing
+// it, so a shortfall we never actually bought or sent out doesn't get counted as spend.
 function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
   const batchOrders = orders.filter((o) => o.batchId === batch.id);
   const rows = batchOrders.map((o) => {
     const key = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
     const article = articlesByKey[key];
+    const packSize = Number(o.packSize) || 1;
+    const shortPacks = Math.min(Number(o.packQty) || 0, (Number(o.shortQty) || 0) / packSize);
+    const effectivePacks = Math.max(0, Math.round(((Number(o.packQty) || 0) - shortPacks) * 100) / 100);
     const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key]) : null;
-    const cost = finalPricePerPack == null ? null : Math.round(finalPricePerPack * (Number(o.packQty) || 0) * 100) / 100;
+    const cost = finalPricePerPack == null ? null : Math.round(finalPricePerPack * effectivePacks * 100) / 100;
     return {
       orderId: o.id,
       articleName: o.articleName || o.product,
       code: article?.code || '',
       packQty: Number(o.packQty) || 0,
+      shortPacks: Math.round(shortPacks * 100) / 100,
+      effectivePacks,
       packSize: o.packSize,
       packUnit: o.packUnit,
       finalPricePerPack,
@@ -2783,7 +2895,9 @@ function IndentBatchDetailMobile({ batch, orders, articlesByKey, configByKey, gr
         {rows.map((r) => (
           <div key={r.orderId} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>{r.articleName}</div>
-            <div style={{ fontSize: 11, color: MUTED }}>{r.code || '—'} · {r.packQty} packs · {r.finalPricePerPack == null ? 'No price yet' : `₹${r.finalPricePerPack.toFixed(2)}/pack`}</div>
+            <div style={{ fontSize: 11, color: MUTED }}>
+              {r.code || '—'} · Ordered {r.packQty}{r.shortPacks > 0 ? <span style={{ color: TOMATO }}> · {r.shortPacks} short</span> : ''} · Costed for {r.effectivePacks} · {r.finalPricePerPack == null ? 'No price yet' : `₹${r.finalPricePerPack.toFixed(2)}/pack`}
+            </div>
             <div style={{ fontSize: 12, fontWeight: 700, color: r.cost == null ? MUTED : LEAF }}>{r.cost == null ? '—' : `₹${r.cost.toFixed(2)}`}</div>
           </div>
         ))}
@@ -2968,10 +3082,10 @@ function ProfitLossTab({ orders, items, purchases, pricingConfig, dispatchLog, g
 }
 
 function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdatePackedQty }) {
-  const [platformFilter, setPlatformFilter] = useState('All');
-  const [categoryFilter, setCategoryFilter] = useState('All');
-  const [qtySort, setQtySort] = useState('none'); // 'none' | 'asc' | 'desc'
-  const [dateFilter, setDateFilter] = useState('');
+  const [platformFilter, setPlatformFilter] = usePersistedState('fnv_packaging_platform', 'All');
+  const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_packaging_category', 'All');
+  const [qtySort, setQtySort] = usePersistedState('fnv_packaging_qtysort', 'none'); // 'none' | 'asc' | 'desc'
+  const [dateFilter, setDateFilter] = usePersistedState('fnv_packaging_date', '');
   const [selectedKey, setSelectedKey] = useState(null);
 
   const categoryByProduct = useMemo(() => {
@@ -2994,7 +3108,8 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
       const dateKey = o.fulfilmentDate || 'No date';
       map[dateKey] = map[dateKey] || {};
       const hasPack = !!(o.packQty && o.packSize);
-      const key = hasPack ? `${dateKey}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}` : `${dateKey}__${o.product}__${o.unit}`;
+      const cityKey = o.city || CITIES[0];
+      const key = hasPack ? `${cityKey}__${dateKey}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${o.product}__${o.unit}`;
       map[dateKey][key] = map[dateKey][key] || {
         key, product: o.product, articleName: o.articleName || o.product, unit: o.unit, qty: 0, platforms: new Set(),
         pendingIds: [], orderIds: [], hasPack, packSize: o.packSize, packUnit: o.packUnit, targetPacks: 0,
@@ -3008,8 +3123,8 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
     return Object.entries(map)
       .map(([date, targetMap]) => {
         let targets = Object.values(targetMap).map((t) => {
-          const packed = packingProgress[t.key] || 0;
-          const isComplete = t.hasPack ? (packed > 0 && packed >= t.targetPacks) : (t.pendingIds.length === 0);
+          const progress = packingProgress[t.key] || { packedQty: 0, shortQty: 0 };
+          const isComplete = t.hasPack ? (progress.packedQty > 0 && progress.packedQty + progress.shortQty >= t.targetPacks) : (t.pendingIds.length === 0);
           return { ...t, isComplete };
         });
         if (qtySort === 'asc') targets.sort((a, b) => (a.hasPack ? a.targetPacks : a.qty) - (b.hasPack ? b.targetPacks : b.qty));
@@ -3039,8 +3154,8 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
     return (
       <PackagingDetail
         target={selectedTarget}
-        packedQty={packingProgress[selectedTarget.key] || 0}
-        onSave={(packedQty) => onUpdatePackedQty(selectedTarget.key, packedQty, selectedTarget.orderIds, selectedTarget.targetPacks)}
+        progress={packingProgress[selectedTarget.key] || { packedQty: 0, shortQty: 0 }}
+        onSave={(packedQty, shortQty) => onUpdatePackedQty(selectedTarget.key, packedQty, shortQty, selectedTarget.orderIds, selectedTarget.targetPacks)}
         onBack={() => setSelectedKey(null)}
       />
     );
@@ -3078,8 +3193,8 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
             <PackagingInlineRow
               key={t.key}
               target={t}
-              packedQty={packingProgress[t.key] || 0}
-              onSave={(packedQty) => onUpdatePackedQty(t.key, packedQty, t.orderIds, t.targetPacks)}
+              progress={packingProgress[t.key] || { packedQty: 0, shortQty: 0 }}
+              onSave={(packedQty, shortQty) => onUpdatePackedQty(t.key, packedQty, shortQty, t.orderIds, t.targetPacks)}
               onAdvanceMany={onAdvanceMany}
               onOpenDetail={() => setSelectedKey(t.key)}
             />
@@ -3095,14 +3210,20 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
   );
 }
 
-function PackagingInlineRow({ target: t, packedQty, onSave, onAdvanceMany, onOpenDetail }) {
-  const [value, setValue] = useState(String(packedQty || ''));
-  useEffect(() => { setValue(String(packedQty || '')); }, [packedQty]);
+function PackagingInlineRow({ target: t, progress, onSave, onAdvanceMany, onOpenDetail }) {
+  const [packedValue, setPackedValue] = useState(String(progress.packedQty || ''));
+  const [shortValue, setShortValue] = useState(String(progress.shortQty || ''));
+  useEffect(() => { setPackedValue(String(progress.packedQty || '')); }, [progress.packedQty]);
+  useEffect(() => { setShortValue(String(progress.shortQty || '')); }, [progress.shortQty]);
 
-  const entered = Number(value) || 0;
-  const shortfall = t.hasPack ? Math.max(0, t.targetPacks - entered) : 0;
-  const changed = entered !== packedQty;
-  const isComplete = t.hasPack ? (entered > 0 && shortfall === 0) : (t.pendingIds.length === 0);
+  const enteredPacked = Number(packedValue) || 0;
+  const enteredShort = Number(shortValue) || 0;
+  // The only two valid outcomes for an article: fully packed, or packed + short adding
+  // up to exactly the target — there's no in-between state that can be saved.
+  const isResolved = t.hasPack ? enteredPacked + enteredShort === t.targetPacks : true;
+  const changed = enteredPacked !== progress.packedQty || enteredShort !== progress.shortQty;
+  const canSave = isResolved && changed;
+  const isComplete = t.hasPack ? (progress.packedQty > 0 && progress.packedQty + progress.shortQty >= t.targetPacks) : (t.pendingIds.length === 0);
 
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0', background: isComplete ? '#EAF3DE' : 'transparent' }}>
@@ -3122,30 +3243,42 @@ function PackagingInlineRow({ target: t, packedQty, onSave, onAdvanceMany, onOpe
       </div>
 
       {t.hasPack ? (
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, marginTop: 8 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>PACKED</div>
-            <input
-              type="number"
-              placeholder="0"
-              value={value}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setValue(e.target.value)}
-              style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 13, padding: '6px 8px' }}
-            />
+        <>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, marginTop: 8 }}>
+            <div style={{ flex: 2 }}>
+              <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>PACKED</div>
+              <input
+                type="number"
+                placeholder="0"
+                value={packedValue}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setPackedValue(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 13, padding: '6px 8px' }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 9, color: enteredShort > 0 ? TOMATO : MUTED, fontWeight: 700 }}>SHORT</div>
+              <input
+                type="number"
+                placeholder="0"
+                value={shortValue}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setShortValue(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${enteredShort > 0 ? TOMATO : LINE}`, fontSize: 13, padding: '6px 8px', color: enteredShort > 0 ? TOMATO : INK }}
+              />
+            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); if (canSave) onSave(enteredPacked, enteredShort); }}
+              disabled={!canSave}
+              style={{ background: canSave ? LEAF : '#C9C2AE', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 12px', fontSize: 12, fontWeight: 700, cursor: canSave ? 'pointer' : 'default' }}
+            >
+              Save
+            </button>
           </div>
-          <div style={{ flex: 1, textAlign: 'right' }}>
-            <div style={{ fontSize: 9, color: shortfall > 0 ? TOMATO : MUTED, fontWeight: 700 }}>SHORTFALL</div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: shortfall > 0 ? TOMATO : LEAF }}>{shortfall > 0 ? `${shortfall} short` : '✓'}</div>
-          </div>
-          <button
-            onClick={(e) => { e.stopPropagation(); onSave(Math.max(0, entered)); }}
-            disabled={!changed}
-            style={{ background: changed ? LEAF : '#C9C2AE', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 12, fontWeight: 700, cursor: changed ? 'pointer' : 'default' }}
-          >
-            Save
-          </button>
-        </div>
+          {!isResolved && (enteredPacked > 0 || enteredShort > 0) && (
+            <div style={{ color: TOMATO, fontSize: 10.5, marginTop: 4 }}>Packed + short must total {t.targetPacks}</div>
+          )}
+        </>
       ) : (
         t.pendingIds.length > 0 ? (
           <button onClick={() => onAdvanceMany(t.pendingIds, 'packed')} style={{ width: '100%', background: '#E6F1FB', color: '#1B5E8C', border: 'none', borderRadius: 8, padding: '6px 0', fontWeight: 700, fontSize: 11, marginTop: 5, cursor: 'pointer' }}>Mark {t.pendingIds.length} packed</button>
@@ -3157,14 +3290,18 @@ function PackagingInlineRow({ target: t, packedQty, onSave, onAdvanceMany, onOpe
   );
 }
 
-function PackagingDetail({ target, packedQty, onSave, onBack }) {
-  const [value, setValue] = useState(String(packedQty || ''));
-  const entered = Number(value) || 0;
-  const shortfall = Math.max(0, target.targetPacks - entered);
-  const excess = Math.max(0, entered - target.targetPacks);
+function PackagingDetail({ target, progress, onSave, onBack }) {
+  const [packedValue, setPackedValue] = useState(String(progress.packedQty || ''));
+  const [shortValue, setShortValue] = useState(String(progress.shortQty || ''));
+  const enteredPacked = Number(packedValue) || 0;
+  const enteredShort = Number(shortValue) || 0;
+  const isResolved = enteredPacked + enteredShort === target.targetPacks;
+  const changed = enteredPacked !== progress.packedQty || enteredShort !== progress.shortQty;
+  const canSave = isResolved && changed;
 
   const save = () => {
-    onSave(Math.max(0, entered));
+    if (!canSave) return;
+    onSave(enteredPacked, enteredShort);
     onBack();
   };
 
@@ -3185,35 +3322,29 @@ function PackagingDetail({ target, packedQty, onSave, onBack }) {
             <div style={{ fontSize: 16, fontWeight: 800, color: INK }}>{target.targetPacks} packs</div>
           </div>
           <div style={{ flex: 1, border: `1px solid ${LINE}`, borderRadius: 8, padding: '8px 10px' }}>
-            <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>PACKED SO FAR</div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: INK }}>{packedQty} packs</div>
+            <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>SAVED SO FAR</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: INK }}>{progress.packedQty} packed, {progress.shortQty} short</div>
           </div>
         </div>
       </Card>
 
       <Card>
-        <div style={sectionTitle}>Update packed quantity</div>
-        <div style={hint}>Enter how many packs are actually packed — the shortfall is calculated automatically.</div>
-        <Field
-          type="number"
-          placeholder="Packed packs"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          style={{ fontSize: 16, fontWeight: 700 }}
-        />
-        <div style={{ display: 'flex', gap: 8, marginTop: 4, marginBottom: 14 }}>
-          <div style={{ flex: 1, border: `1px solid ${shortfall > 0 ? TOMATO : LINE}`, background: shortfall > 0 ? '#FBEAE3' : '#fff', borderRadius: 8, padding: '8px 10px' }}>
-            <div style={{ fontSize: 10, color: shortfall > 0 ? TOMATO : MUTED, fontWeight: 700 }}>SHORTFALL</div>
-            <div style={{ fontSize: 15, fontWeight: 800, color: shortfall > 0 ? TOMATO : LEAF }}>{shortfall} pack{shortfall !== 1 ? 's' : ''}</div>
+        <div style={sectionTitle}>Update packed / short quantity</div>
+        <div style={hint}>An article can only be saved once — either fully packed, or packed plus short adding up to the full target ({target.targetPacks} packs).</div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ flex: 2 }}>
+            <div style={smallLabel}>Packed</div>
+            <Field type="number" placeholder="0" value={packedValue} onChange={(e) => setPackedValue(e.target.value)} style={{ fontSize: 16, fontWeight: 700 }} />
           </div>
-          {excess > 0 && (
-            <div style={{ flex: 1, border: `1px solid ${AMBER}`, background: '#FBEFDC', borderRadius: 8, padding: '8px 10px' }}>
-              <div style={{ fontSize: 10, color: AMBER, fontWeight: 700 }}>EXTRA</div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: AMBER }}>{excess} pack{excess !== 1 ? 's' : ''}</div>
-            </div>
-          )}
+          <div style={{ flex: 1 }}>
+            <div style={smallLabel}>Short</div>
+            <Field type="number" placeholder="0" value={shortValue} onChange={(e) => setShortValue(e.target.value)} style={{ fontSize: 16, fontWeight: 700, borderColor: enteredShort > 0 ? TOMATO : undefined, color: enteredShort > 0 ? TOMATO : undefined }} />
+          </div>
         </div>
-        <PrimaryBtn onClick={save}>Save packed quantity</PrimaryBtn>
+        {!isResolved && (enteredPacked > 0 || enteredShort > 0) && (
+          <div style={{ color: TOMATO, fontSize: 12, marginTop: -6, marginBottom: 12 }}>Packed + short must total {target.targetPacks} packs.</div>
+        )}
+        <PrimaryBtn onClick={save} disabled={!canSave}>Save</PrimaryBtn>
       </Card>
     </div>
   );
@@ -3252,8 +3383,7 @@ function DispatchModal({ selectedCount, crates, onClose, onConfirm }) {
   );
 }
 
-function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }) {
-  const pending = orders.filter((o) => o.status === 'pending');
+function DispatchTab({ orders, crates, dispatchLog, onDispatchBatch }) {
   const packed = useMemo(() => orders
     .filter((o) => o.status === 'packed')
     .map((o) => ({ ...o, remaining: Math.max(0, Math.round((o.qty - (o.dispatchedQty || 0) - (o.shortQty || 0)) * 100) / 100) })),
@@ -3262,13 +3392,7 @@ function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }
 
   const [view, setView] = useState('dispatch'); // 'dispatch' | 'history' | 'all'
   const [selected, setSelected] = useState([]);
-  const [dispatchQtyById, setDispatchQtyById] = useState({});
-  const [shortQtyById, setShortQtyById] = useState({});
   const [showModal, setShowModal] = useState(false);
-  const [awaitingOpen, setAwaitingOpen] = useState(false);
-
-  const dispatchQtyFor = (o) => dispatchQtyById[o.id] !== undefined ? dispatchQtyById[o.id] : String(o.remaining);
-  const shortQtyFor = (o) => shortQtyById[o.id] !== undefined ? shortQtyById[o.id] : '';
 
   const toggleSelect = (id) => setSelected((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
@@ -3276,14 +3400,10 @@ function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }
     if (selected.length === 0) return;
     const dispatchItems = selected.map((id) => {
       const o = packed.find((x) => x.id === id);
-      return {
-        orderId: id,
-        dispatchQty: dispatchQtyById[id] !== undefined ? dispatchQtyById[id] : o?.remaining,
-        shortQty: shortQtyById[id] || 0,
-      };
+      return { orderId: id, dispatchQty: o?.remaining || 0, shortQty: 0 };
     });
     onDispatchBatch({ items: dispatchItems, vehicleNo, driverName, cratesUsed, boxesUsed });
-    setSelected([]); setDispatchQtyById({}); setShortQtyById({}); setShowModal(false);
+    setSelected([]); setShowModal(false);
   };
 
   return (
@@ -3296,29 +3416,11 @@ function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }
 
       {view === 'dispatch' && (
         <>
-          {pending.length > 0 && (
-            <Card style={{ marginBottom: 14 }}>
-              <div onClick={() => setAwaitingOpen((x) => !x)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
-                <div style={sectionTitle}>Awaiting packing</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ background: '#FBEFDC', color: AMBER, fontWeight: 800, fontSize: 12, padding: '3px 9px', borderRadius: 999 }}>{pending.length}</span>
-                  <ChevronRight size={15} color={MUTED} style={{ transform: awaitingOpen ? 'rotate(90deg)' : 'none' }} />
-                </div>
-              </div>
-              {awaitingOpen && pending.map((o) => (
-                <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
-                  <div><div style={{ fontWeight: 700, fontSize: 13 }}>{o.articleName || o.product}</div><div style={{ fontSize: 11, color: MUTED }}>{o.id} · {o.qty} {o.unit}</div></div>
-                  <button onClick={() => onAdvance(o.id, 'packed')} style={{ background: '#E6F1FB', color: '#1B5E8C', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Mark packed</button>
-                </div>
-              ))}
-            </Card>
-          )}
-
           <Card style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
               <div style={{ flex: 1 }}>
                 <div style={sectionTitle}>Packed — ready ({packed.length})</div>
-                <div style={hint}>Dispatch qty defaults to what's left — lower it if only part is going now. Whatever isn't dispatched stays "packed" for next trip, unless marked short.</div>
+                <div style={hint}>An article only shows up here once it's been fully resolved in Packaging — either fully packed, or packed with the rest marked short. Quantities aren't editable here; go back to Packaging to change them.</div>
               </div>
             </div>
             {packed.map((o) => (
@@ -3327,33 +3429,13 @@ function DispatchTab({ orders, crates, dispatchLog, onAdvance, onDispatchBatch }
                   <div onClick={() => toggleSelect(o.id)} style={{ width: 18, height: 18, borderRadius: 4, border: `1.5px solid ${LINE}`, background: selected.includes(o.id) ? LEAF : '#fff', cursor: 'pointer', flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 13 }}>{o.articleName || o.product}</div>
-                    <div style={{ fontSize: 11, color: MUTED }}>{o.id} · Remaining {o.remaining} {o.unit}</div>
+                    <div style={{ fontSize: 11, color: MUTED }}>{o.id}</div>
                   </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6, marginLeft: 28 }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>DISPATCH QTY</div>
-                    <input
-                      type="number"
-                      value={dispatchQtyFor(o)}
-                      onChange={(e) => setDispatchQtyById((p) => ({ ...p, [o.id]: e.target.value }))}
-                      style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 12, padding: '6px 8px' }}
-                    />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>SHORT QTY</div>
-                    <input
-                      type="number"
-                      placeholder="0"
-                      value={shortQtyFor(o)}
-                      onChange={(e) => setShortQtyById((p) => ({ ...p, [o.id]: e.target.value }))}
-                      style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, border: `1px solid ${Number(shortQtyFor(o)) > 0 ? TOMATO : LINE}`, fontSize: 12, padding: '6px 8px', color: Number(shortQtyFor(o)) > 0 ? TOMATO : INK }}
-                    />
-                  </div>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: LEAF, flexShrink: 0 }}>{o.remaining} {o.unit}</div>
                 </div>
               </div>
             ))}
-            {packed.length === 0 && <div style={hint}>Nothing packed yet.</div>}
+            {packed.length === 0 && <div style={hint}>Nothing packed yet — resolve articles in Packaging first.</div>}
           </Card>
         </>
       )}
