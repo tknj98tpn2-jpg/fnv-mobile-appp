@@ -47,6 +47,43 @@ const BG = '#F6F3EA';
 
 const PLATFORMS = ['Blinkit', 'Flipkart'];
 
+// Each indent can be split across dark stores (Flipkart lists one column per store);
+// Blinkit has a single store. Orders carry a `store`; older orders without one fall back
+// to the platform's default store, if it has one.
+const PLATFORM_DEFAULT_STORE = { Blinkit: 'CPC' };
+const orderStore = (o) => o.store || PLATFORM_DEFAULT_STORE[o.platform] || '';
+// "Jab_103_6_Sarvodya Nagar" -> "Sarvodya Nagar"
+const storeLabel = (s) => (s ? (String(s).replace(/^[A-Za-z]{2,5}_\d+_\d+_/, '').replace(/_/g, ' ').trim() || String(s)) : 'No store');
+function storeOptionsFor(orders, platform) {
+  const stores = new Set();
+  orders.forEach((o) => { if (o.platform === platform) stores.add(orderStore(o)); });
+  if (PLATFORM_DEFAULT_STORE[platform]) stores.add(PLATFORM_DEFAULT_STORE[platform]);
+  return Array.from(stores)
+    .sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
+    .map((s) => ({ value: s || '__none__', store: s, label: storeLabel(s) }));
+}
+// When a target's short packs are split across its orders (one order per store), keep
+// them in whole packs instead of fractions. Returns null when it can't (non-integer input).
+function allocateShortPacks(targetOrders, shortQty) {
+  const total = targetOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0);
+  if (!(total > 0) || !Number.isInteger(shortQty) || targetOrders.some((o) => !Number.isInteger(Number(o.packQty) || 0))) return null;
+  const alloc = {};
+  const rem = [];
+  let given = 0;
+  targetOrders.forEach((o, i) => {
+    const p = Number(o.packQty) || 0;
+    const exact = (shortQty * p) / total;
+    const base = Math.min(Math.floor(exact), p);
+    alloc[o.id] = base;
+    given += base;
+    rem.push({ id: o.id, frac: exact - Math.floor(exact), room: p - base, i });
+  });
+  let left = shortQty - given;
+  rem.sort((a, b) => (b.frac - a.frac) || (a.i - b.i));
+  rem.forEach((r) => { if (left > 0 && r.room > 0) { alloc[r.id] += 1; left -= 1; } });
+  return alloc;
+}
+
 // Phase 1 of multi-city support: each business location gets its own Items and
 // Vendors (Orders, Purchases, Dispatch, P&L follow in later phases). Records made
 // before this existed have no `city` field — they're treated as belonging to the
@@ -125,7 +162,9 @@ function pickField(rowObj, candidates) {
 }
 const KNOWN_INDENT_HEADERS = new Set(['fsn', 'title', 'category', 'type', 'umo', 'uom', 'unit', 'mrp', 'price', 't100t500fsn', 'eancode', 'shelflifedays', 'shelflife', 'temperaturezone', 'itemcode', 'articlecode', 'productcode', 'sku', 'code', 'productdescription', 'description', 'article', 'product', 'item', 'indent', 'qty', 'quantity', 'orderedqty']);
 function sumUnknownNumericColumns(rowObj, headers) {
-  let total = 0, found = false;
+  // Returns { "<store column header>": qty } for every leftover numeric column with a
+  // positive value, or null when there is none.
+  const stores = {};
   headers.forEach((h) => {
     if (!h) return;
     const norm = h.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -133,20 +172,22 @@ function sumUnknownNumericColumns(rowObj, headers) {
     const v = rowObj[h];
     if (v === '' || v === null || v === undefined) return;
     const num = Number(v);
-    if (!isNaN(num)) { total += num; found = true; }
+    if (!isNaN(num) && num > 0) stores[String(h).trim()] = num;
   });
-  return found ? total : null;
+  return Object.keys(stores).length > 0 ? stores : null;
 }
+
 function parseIndentRows(json) {
   return json.map((r, idx) => {
     const headers = Object.keys(r);
     const rawName = String(pickField(r, ['title', 'article', 'product', 'item', 'description']) || '').trim();
     const rawCode = String(pickField(r, ['fsn', 'itemcode', 'articlecode', 'productcode', 'sku', 'code']) || '').trim();
     let qty = Number(pickField(r, ['indent', 'qty', 'quantity', 'orderedqty']) || 0);
-    if (!qty) { const st = sumUnknownNumericColumns(r, headers); if (st) qty = st; }
+    let storeQtys = null;
+    if (!qty) { const st = sumUnknownNumericColumns(r, headers); if (st) { storeQtys = st; qty = Object.values(st).reduce((s, v) => s + v, 0); } }
     const unit = String(pickField(r, ['umo', 'uom', 'unit']) || '').trim();
     const rawCategory = String(pickField(r, ['type', 'category']) || '').trim();
-    return { key: `row-${idx}-${rawName}`, rawName, rawCode, qty, unit, rawCategory };
+    return { key: `row-${idx}-${rawName}`, rawName, rawCode, qty, unit, rawCategory, storeQtys };
   }).filter((r) => r.rawName && r.qty > 0);
 }
 
@@ -340,7 +381,7 @@ export default function FnvMobilePreview() {
       totalDispatchQty += dQty;
       logItems.push({
         orderId, product: o.articleName || o.product, unit: o.unit, dispatchQty: dQty, shortQty: sQty, remaining: Math.max(0, remaining),
-        platform: o.platform, baseProduct: o.product, packSize: o.packSize || null, packUnit: o.packUnit || null, batchId: o.batchId || null,
+        platform: o.platform, store: o.store || '', baseProduct: o.product, packSize: o.packSize || null, packUnit: o.packUnit || null, batchId: o.batchId || null,
       });
     });
     b.commit();
@@ -365,6 +406,7 @@ export default function FnvMobilePreview() {
     const resolved = targetPacks > 0 && (packedQty + shortQty) >= targetPacks;
     const targetOrders = orderIds.map((id) => orders.find((o) => o.id === id)).filter(Boolean);
     const totalPacks = targetOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0) || 1;
+    const alloc = resolved ? allocateShortPacks(targetOrders, shortQty) : null;
     targetOrders.forEach((o) => {
       if (o.status === 'dispatched') return;
       if (!resolved) {
@@ -372,8 +414,8 @@ export default function FnvMobilePreview() {
         return;
       }
       const share = (Number(o.packQty) || 0) / totalPacks;
-      const myShortPacks = Math.round(shortQty * share * 100) / 100;
-      const myPackedPacks = Math.round(packedQty * share * 100) / 100;
+      const myShortPacks = alloc ? alloc[o.id] : Math.round(shortQty * share * 100) / 100;
+      const myPackedPacks = alloc ? (Number(o.packQty) || 0) - alloc[o.id] : Math.round(packedQty * share * 100) / 100;
       const packSize = Number(o.packSize) || 1;
       const myShortQty = Math.round(myShortPacks * packSize * 100) / 100;
       if (myPackedPacks <= 0) {
@@ -476,7 +518,7 @@ export default function FnvMobilePreview() {
               onCreateIndentBatch={createIndentBatch} onToggleReleaseBatch={toggleReleaseBatch}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} recipes={recipes} vendors={cityVendors} vendorLedger={vendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={vendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} />}
           {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} onRecord={recordStockCount} />}
           {tab === 'pricing' && <PricingTab orders={orders} items={items} purchases={purchases} pricingConfig={pricingConfig} onUpdate={updatePricingConfig} />}
           {tab === 'profitloss' && <ProfitLossTab orders={orders} items={items} purchases={purchases} pricingConfig={pricingConfig} dispatchLog={dispatchLog} grnReports={grnReports} indentBatches={indentBatches} onUploadGrn={uploadGrnReport} onUpdateIndentBatch={updateIndentBatch} />}
@@ -812,9 +854,25 @@ function PlacedOrderCard({ order, onUpdate, onDelete }) {
   );
 }
 
+function formatLedgerDate(d, short) {
+  if (!d) return 'No date';
+  const dt = new Date(`${d}T00:00:00`);
+  if (isNaN(dt.getTime())) return String(d);
+  return short
+    ? dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+    : dt.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+}
+const isDueEntry = (e) => e.payment === 'credit' && !e.settled;
+const money = (n) => `₹${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-IN')}`;
+
 function VendorsTab({ items, vendors, vendorLedger, placedOrders, onAdd, onDelete, onToggleItem, onSettle, onUpdatePlacedOrder, onDeletePlacedOrder }) {
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
+  const [vendorSearch, setVendorSearch] = useState('');
+  const [openVendorId, setOpenVendorId] = useState(null);
+  const [ledgerFilter, setLedgerFilter] = useState('due'); // 'due' | 'all'
+  const [selectedDates, setSelectedDates] = useState([]);
+  const [showItems, setShowItems] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [payModal, setPayModal] = useState(null);
   const [payMode, setPayMode] = useState('cash');
@@ -828,20 +886,6 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, onAdd, onDelet
     onAdd({ id: `VEN-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: name.trim(), contact: contact.trim(), itemIds: [] });
     setName(''); setContact('');
   };
-
-  const allCredit = vendorLedger.filter((e) => e.payment === 'credit' && !e.settled);
-  const totalCredit = allCredit.reduce((s, e) => s + e.total, 0);
-
-  const grouped = useMemo(() => {
-    const map = {};
-    allCredit.forEach((e) => {
-      const key = `${e.vendorId}__${e.date}`;
-      if (!map[key]) map[key] = { vendorId: e.vendorId, vendorName: e.vendorName, date: e.date, entries: [], total: 0 };
-      map[key].entries.push(e);
-      map[key].total += e.total;
-    });
-    return Object.values(map).sort((a, b) => a.date.localeCompare(b.date) || a.vendorName.localeCompare(b.vendorName));
-  }, [allCredit]);
 
   const updateDraft = (entryId, field, value) => {
     setDraftEdits((prev) => {
@@ -860,13 +904,291 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, onAdd, onDelet
     const total = d.total !== undefined ? Number(d.total) : (qty * unitPrice || entry.total);
     return { qty, unitPrice, total };
   };
-  const groupEffectiveTotal = (g) => g.entries.reduce((s, e) => s + getEffective(e).total, 0);
+  const sumEffective = (entries) => entries.reduce((s, e) => s + getEffective(e).total, 0);
+  const groupEffectiveTotal = (g) => sumEffective(g.entries);
+
+  // ---- per-vendor helpers
+  const dueEntriesOf = (vendorId) => vendorLedger.filter((e) => e.vendorId === vendorId && isDueEntry(e));
+  const dueTotalOf = (vendorId) => sumEffective(dueEntriesOf(vendorId));
+  const totalDue = vendors.reduce((s, v) => s + dueTotalOf(v.id), 0);
+
+  // Date-wise ledger for one vendor, newest day first.
+  const ledgerGroupsOf = (vendorId) => {
+    const map = {};
+    vendorLedger.filter((e) => e.vendorId === vendorId).forEach((e) => {
+      const d = e.date || '';
+      if (!map[d]) map[d] = { date: d, entries: [], due: [] };
+      map[d].entries.push(e);
+      if (isDueEntry(e)) map[d].due.push(e);
+    });
+    return Object.values(map).sort((a, b) => b.date.localeCompare(a.date));
+  };
+
+  const openPay = (vendor, entries) => {
+    if (entries.length === 0) return;
+    const sorted = entries.slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const dates = Array.from(new Set(sorted.map((e) => e.date || '')));
+    const label = dates.length > 1
+      ? `${dates.length} days · ${formatLedgerDate(dates[0], true)} – ${formatLedgerDate(dates[dates.length - 1], true)}`
+      : formatLedgerDate(dates[0]);
+    setPayModal({ vendorName: vendor.name, date: label, multi: dates.length > 1, entries: sorted });
+    setPayMode('cash'); setPayRef(''); setPayNote('');
+  };
 
   const confirmPayment = () => {
     if (!payModal) return;
-    onSettle(payModal.entries.map((e) => e.id), payMode, payNote.trim(), draftEdits);
+    const ids = payModal.entries.map((e) => e.id);
+    const note = [payRef.trim() ? `Ref: ${payRef.trim()}` : '', payNote.trim()].filter(Boolean).join(' · ');
+    onSettle(ids, payMode, note, draftEdits);
+    setDraftEdits((prev) => { const next = { ...prev }; ids.forEach((id) => { delete next[id]; }); return next; });
+    setSelectedDates([]);
     setPayModal(null); setPayMode('cash'); setPayRef(''); setPayNote('');
   };
+
+  const openLedger = (id) => {
+    setOpenVendorId(id); setLedgerFilter('due'); setSelectedDates([]);
+    setExpandedGroup(null); setShowItems(false); setConfirmDeleteId(null);
+  };
+  const closeLedger = () => { setOpenVendorId(null); setSelectedDates([]); setExpandedGroup(null); setConfirmDeleteId(null); };
+  const toggleDate = (d) => setSelectedDates((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
+
+  // ---- Payment modal (bottom sheet) shared by the list and the ledger view
+  const payModalEl = payModal && (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 200 }}>
+      <div style={{ background: '#fff', borderRadius: '18px 18px 0 0', padding: '24px 20px 32px', width: '100%', maxWidth: 420, maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>Record payment</div>
+          <button onClick={() => setPayModal(null)} style={{ background: 'none', border: 'none', fontSize: 20, color: MUTED, cursor: 'pointer' }}>✕</button>
+        </div>
+
+        {/* Breakdown */}
+        <div style={{ background: '#F6F3EA', borderRadius: 12, padding: '14px 14px', marginBottom: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>{payModal.vendorName}</div>
+          <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>{payModal.date}</div>
+          {payModal.entries.map((e) => {
+            const eff = getEffective(e);
+            const changed = draftEdits[e.id] !== undefined;
+            return (
+              <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '5px 0', borderTop: `1px solid ${LINE}`, fontSize: 12 }}>
+                <span style={{ color: changed ? AMBER : MUTED }}>{payModal.multi ? `${formatLedgerDate(e.date, true)} · ` : ''}{e.itemName} · {eff.qty} {e.unit} @ ₹{eff.unitPrice}/{e.unit}{changed ? ' ✏️' : ''}</span>
+                <span style={{ fontWeight: 700, color: changed ? AMBER : INK, flexShrink: 0 }}>₹{eff.total.toLocaleString('en-IN')}</span>
+              </div>
+            );
+          })}
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `2px solid ${LINE}`, marginTop: 8, paddingTop: 10 }}>
+            <span style={{ fontWeight: 700 }}>Total to pay</span>
+            <span style={{ fontWeight: 900, fontSize: 18, color: LEAF }}>₹{groupEffectiveTotal(payModal).toLocaleString('en-IN')}</span>
+          </div>
+        </div>
+
+        {/* Payment mode */}
+        <div style={smallLabel}>PAYMENT MODE</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+          {[{ key: 'cash', label: '💵 Cash' }, { key: 'upi', label: '📱 UPI' }, { key: 'bank', label: '🏦 Bank' }, { key: 'cheque', label: '📄 Cheque' }].map((m) => (
+            <button key={m.key} onClick={() => setPayMode(m.key)} style={{ flex: 1, padding: '8px 4px', borderRadius: 8, border: `1.5px solid ${payMode === m.key ? LEAF : LINE}`, background: payMode === m.key ? '#EAF3DE' : '#fff', color: payMode === m.key ? LEAF_DARK : INK, fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {payMode !== 'cash' && (
+          <>
+            <div style={smallLabel}>{payMode === 'upi' ? 'UPI / TRANSACTION ID' : payMode === 'bank' ? 'NEFT / RTGS REF NO.' : 'CHEQUE NO.'}</div>
+            <Field placeholder={payMode === 'cheque' ? 'e.g. 004521' : 'e.g. TXN1234567'} value={payRef} onChange={(e) => setPayRef(e.target.value)} />
+          </>
+        )}
+        <div style={smallLabel}>NOTE (OPTIONAL)</div>
+        <Field placeholder="e.g. Full settlement, partial pending..." value={payNote} onChange={(e) => setPayNote(e.target.value)} />
+
+        <PrimaryBtn onClick={confirmPayment} color={LEAF}>
+          Confirm payment — ₹{groupEffectiveTotal(payModal).toLocaleString('en-IN')}
+        </PrimaryBtn>
+      </div>
+    </div>
+  );
+
+  // =====================  VENDOR LEDGER VIEW  =====================
+  const openVendor = openVendorId ? vendors.find((v) => v.id === openVendorId) : null;
+  if (openVendor) {
+    const vendorDueEntries = dueEntriesOf(openVendor.id);
+    const vendorDue = sumEffective(vendorDueEntries);
+    const groups = ledgerGroupsOf(openVendor.id).filter((g) => ledgerFilter === 'all' || g.due.length > 0);
+    const selectedEntries = groups.filter((g) => selectedDates.includes(g.date)).flatMap((g) => g.due);
+    const selectedDays = groups.filter((g) => selectedDates.includes(g.date) && g.due.length > 0).length;
+
+    return (
+      <div style={{ padding: 16 }}>
+        <button onClick={closeLedger} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 13, cursor: 'pointer', marginBottom: 12, padding: 0 }}>
+          <ArrowLeft size={15} /> Vendors
+        </button>
+
+        <Card style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 17 }}>{openVendor.name}</div>
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
+                {openVendor.contact ? <a href={`tel:${openVendor.contact}`} style={{ color: LEAF, fontWeight: 600, textDecoration: 'none' }}>{openVendor.contact}</a> : 'No number'}
+              </div>
+            </div>
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>TOTAL OUTSTANDING</div>
+              <div style={{ fontWeight: 800, fontSize: 20, color: vendorDue > 0 ? AMBER : LEAF }}>{money(vendorDue)}</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <PrimaryBtn onClick={() => openPay(openVendor, vendorDueEntries)} disabled={vendorDueEntries.length === 0}>
+              {vendorDueEntries.length === 0 ? 'Nothing due' : `Pay all outstanding — ${money(vendorDue)}`}
+            </PrimaryBtn>
+          </div>
+        </Card>
+
+        <Card style={{ marginBottom: 12 }}>
+          <div style={{ ...sectionTitle, marginBottom: 6 }}>Ledger — date wise</div>
+          <div style={{ display: 'flex', marginBottom: 6 }}>
+            <Chip label="Outstanding" active={ledgerFilter === 'due'} onClick={() => setLedgerFilter('due')} />
+            <Chip label="All entries" active={ledgerFilter === 'all'} onClick={() => setLedgerFilter('all')} />
+          </div>
+          <div style={hint}>Tick the days you want to pay together, or tap a day to view and edit its items.</div>
+
+          {groups.map((g) => {
+            const gKey = `${openVendor.id}-${g.date}`;
+            const isOpen = expandedGroup === gKey;
+            const rows = ledgerFilter === 'due' ? g.due : g.entries;
+            const dueAmt = sumEffective(g.due);
+            const hasDue = g.due.length > 0;
+            const isSelected = selectedDates.includes(g.date);
+            return (
+              <div key={gKey} style={{ borderTop: `1px solid ${LINE}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 0' }}>
+                  {hasDue ? (
+                    <div onClick={() => toggleDate(g.date)} style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${isSelected ? LEAF : LINE}`, background: isSelected ? LEAF : '#fff', flexShrink: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {isSelected && <span style={{ color: '#fff', fontSize: 12, fontWeight: 900 }}>✓</span>}
+                    </div>
+                  ) : (
+                    <div style={{ width: 20, flexShrink: 0 }} />
+                  )}
+                  <div onClick={() => setExpandedGroup(isOpen ? null : gKey)} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{formatLedgerDate(g.date)}</div>
+                    <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{g.entries.length} item{g.entries.length !== 1 ? 's' : ''} · {isOpen ? '▲ hide' : '▼ view & edit'}</div>
+                  </div>
+                  <div onClick={() => setExpandedGroup(isOpen ? null : gKey)} style={{ textAlign: 'right', cursor: 'pointer' }}>
+                    {hasDue ? (
+                      <div style={{ fontWeight: 800, fontSize: 15, color: AMBER }}>{money(dueAmt)}</div>
+                    ) : (
+                      <div style={{ fontWeight: 800, fontSize: 13, color: LEAF }}>Paid ✓</div>
+                    )}
+                  </div>
+                  {hasDue && (
+                    <button onClick={() => openPay(openVendor, g.due)} style={{ background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '7px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>
+                      Pay
+                    </button>
+                  )}
+                </div>
+
+                {isOpen && (
+                  <div style={{ background: '#F6F3EA', borderRadius: 10, padding: '10px 12px', marginBottom: 8 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px 52px 72px', gap: 6, marginBottom: 6 }}>
+                      {['ITEM', 'QTY', 'UOM', 'RATE (₹)'].map((h) => <div key={h} style={{ fontSize: 9, fontWeight: 700, color: MUTED }}>{h}</div>)}
+                    </div>
+                    {rows.map((e) => {
+                      const due = isDueEntry(e);
+                      if (!due) {
+                        const modeLabel = String(e.settledPayment || e.payment || '').toUpperCase();
+                        return (
+                          <div key={e.id} style={{ borderTop: `1px solid ${LINE}`, paddingTop: 8, marginTop: 4 }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px 52px 72px', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                              <div style={{ fontWeight: 600 }}>{e.itemName}</div>
+                              <div>{e.qty}</div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: MUTED, textAlign: 'center' }}>{e.unit}</div>
+                              <div>{e.unitPrice}</div>
+                            </div>
+                            <div style={{ textAlign: 'right', fontSize: 11, color: LEAF, marginTop: 2 }}>
+                              {money(e.total)} · Paid{modeLabel ? ` (${modeLabel})` : ''}{e.settledDate ? ` on ${formatLedgerDate(e.settledDate, true)}` : ''}
+                            </div>
+                          </div>
+                        );
+                      }
+                      const d = draftEdits[e.id] || {};
+                      const effQty = d.qty !== undefined ? d.qty : String(e.qty);
+                      const effPrice = d.unitPrice !== undefined ? d.unitPrice : String(e.unitPrice);
+                      const eff = getEffective(e);
+                      const changed = d.qty !== undefined || d.unitPrice !== undefined;
+                      return (
+                        <div key={e.id} style={{ borderTop: `1px solid ${LINE}`, paddingTop: 8, marginTop: 4 }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px 52px 72px', gap: 6, alignItems: 'center' }}>
+                            <div style={{ fontWeight: 600, fontSize: 12 }}>{e.itemName}</div>
+                            <input type="number" value={effQty} onChange={(ev) => updateDraft(e.id, 'qty', ev.target.value)} style={{ border: `1px solid ${changed ? AMBER : LINE}`, borderRadius: 6, padding: '5px 6px', fontSize: 12, background: changed ? '#FFFBF3' : '#fff', width: '100%', boxSizing: 'border-box' }} />
+                            <div style={{ fontSize: 11, fontWeight: 700, color: MUTED, textAlign: 'center' }}>{e.unit}</div>
+                            <input type="number" value={effPrice} onChange={(ev) => updateDraft(e.id, 'unitPrice', ev.target.value)} style={{ border: `1px solid ${changed ? AMBER : LINE}`, borderRadius: 6, padding: '5px 6px', fontSize: 12, background: changed ? '#FFFBF3' : '#fff', width: '100%', boxSizing: 'border-box' }} />
+                          </div>
+                          <div style={{ textAlign: 'right', fontSize: 11, color: changed ? AMBER : MUTED, marginTop: 2 }}>
+                            Total: {money(eff.total)}{changed ? ' ✏️' : ''}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {hasDue && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+                        <span style={{ fontWeight: 800, color: AMBER, fontSize: 13 }}>Revised: {money(dueAmt)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {groups.length === 0 && <div style={hint}>{ledgerFilter === 'due' ? 'Nothing outstanding for this vendor.' : 'No ledger entries yet.'}</div>}
+        </Card>
+
+        <Card style={{ marginBottom: 12 }}>
+          <div onClick={() => setShowItems((x) => !x)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
+            <div style={{ ...sectionTitle, marginBottom: 0 }}>Linked items ({openVendor.itemIds.length})</div>
+            <ChevronRight size={16} color={MUTED} style={{ transform: showItems ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+          </div>
+          {showItems && (
+            <div style={{ marginTop: 10 }}>
+              <VendorItemLinkerMobile vendorId={openVendor.id} vendorItemIds={openVendor.itemIds} items={items} onToggle={onToggleItem} />
+            </div>
+          )}
+        </Card>
+
+        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+          {confirmDeleteId === openVendor.id ? (
+            <div>
+              <div style={{ fontSize: 12, color: TOMATO, marginBottom: 8 }}>
+                Delete {openVendor.name}?{vendorDue > 0 ? ` ${money(vendorDue)} is still unpaid.` : ''}
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+                <button onClick={() => { onDelete(openVendor.id); closeLedger(); }} style={{ background: TOMATO, color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes, delete</button>
+                <button onClick={() => setConfirmDeleteId(null)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 6, padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmDeleteId(openVendor.id)} style={{ background: 'none', border: 'none', color: TOMATO, cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <Trash2 size={13} /> Delete vendor
+            </button>
+          )}
+        </div>
+
+        {selectedDays > 0 && (
+          <div style={{ position: 'sticky', bottom: 0, background: BG, paddingTop: 10, marginLeft: -16, marginRight: -16, paddingLeft: 16, paddingRight: 16, paddingBottom: 8 }}>
+            <PrimaryBtn onClick={() => openPay(openVendor, selectedEntries)} color={TOMATO}>
+              Pay {selectedDays} day{selectedDays !== 1 ? 's' : ''} together — {money(sumEffective(selectedEntries))}
+            </PrimaryBtn>
+          </div>
+        )}
+
+        {payModalEl}
+      </div>
+    );
+  }
+
+  // =====================  VENDOR LIST  =====================
+  const searchTerm = vendorSearch.trim().toLowerCase();
+  const shownVendors = vendors
+    .filter((v) => !searchTerm || `${v.name} ${v.contact || ''}`.toLowerCase().includes(searchTerm))
+    .map((v) => ({ v, due: dueTotalOf(v.id) }))
+    .sort((a, b) => (Number(b.due > 0) - Number(a.due > 0)) || (b.due - a.due) || a.v.name.localeCompare(b.v.name));
 
   return (
     <div style={{ padding: 16 }}>
@@ -879,159 +1201,35 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, onAdd, onDelet
       </Card>
 
       <Card>
-        <div style={sectionTitle}>Vendors ({vendors.length})</div>
-        {vendors.map((v) => (
-          <div key={v.id} style={{ borderTop: `1px solid ${LINE}`, padding: '12px 0' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{v.name}</div>
-                <div style={{ fontSize: 12, color: MUTED }}>{v.contact || '—'} · {v.itemIds.length} item{v.itemIds.length !== 1 ? 's' : ''} linked</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                {(() => {
-                  const credit = vendorLedger.filter((e) => e.vendorId === v.id && e.payment === 'credit' && !e.settled).reduce((s, e) => s + e.total, 0);
-                  return credit > 0 ? (
-                    <div style={{ background: '#FBEFDC', color: AMBER, borderRadius: 6, padding: '3px 8px', fontSize: 11, fontWeight: 800 }}>
-                      ₹{credit.toLocaleString('en-IN')} credit due
-                    </div>
-                  ) : null;
-                })()}
-                {confirmDeleteId === v.id ? (
-                  <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                    <button onClick={() => { onDelete(v.id); setConfirmDeleteId(null); }} style={{ background: TOMATO, color: '#fff', border: 'none', borderRadius: 6, padding: '4px 8px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Yes</button>
-                    <button onClick={() => setConfirmDeleteId(null)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 6, padding: '4px 8px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>No</button>
-                  </div>
-                ) : (
-                  <button onClick={() => setConfirmDeleteId(v.id)} style={{ background: 'none', border: 'none', color: TOMATO, cursor: 'pointer', marginTop: 4 }}><Trash2 size={14} /></button>
-                )}
-              </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <div style={{ ...sectionTitle, marginBottom: 0 }}>Vendors ({vendors.length})</div>
+          {totalDue > 0 && <div style={{ fontSize: 12, fontWeight: 800, color: AMBER }}>Total due {money(totalDue)}</div>}
+        </div>
+        <Field placeholder="Search vendor…" value={vendorSearch} onChange={(e) => setVendorSearch(e.target.value)} style={{ marginBottom: 4 }} />
+        {shownVendors.map(({ v, due }) => (
+          <div key={v.id} onClick={() => openLedger(v.id)} style={{ borderTop: `1px solid ${LINE}`, padding: '12px 0', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
+              <div style={{ fontSize: 12, color: MUTED }}>{v.contact || '—'}</div>
             </div>
-            <VendorItemLinkerMobile vendorId={v.id} vendorItemIds={v.itemIds} items={items} onToggle={onToggleItem} />
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>OUTSTANDING</div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: due > 0 ? AMBER : MUTED }}>{money(due)}</div>
+            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); openPay(v, dueEntriesOf(v.id)); }}
+              disabled={due <= 0}
+              style={{ background: due > 0 ? LEAF : '#C9C2AE', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontWeight: 700, fontSize: 12, cursor: due > 0 ? 'pointer' : 'default', flexShrink: 0 }}
+            >
+              Pay
+            </button>
+            <ChevronRight size={15} color={MUTED} style={{ flexShrink: 0 }} />
           </div>
         ))}
-        {vendors.length === 0 && <div style={hint}>No vendors yet.</div>}
+        {shownVendors.length === 0 && <div style={hint}>{vendors.length === 0 ? 'No vendors yet.' : 'No vendor matches your search.'}</div>}
       </Card>
 
-      {allCredit.length > 0 && (
-        <Card style={{ marginTop: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>Outstanding credit</div>
-            <div style={{ fontWeight: 800, color: AMBER }}>₹{totalCredit.toLocaleString('en-IN')}</div>
-          </div>
-          {grouped.map((g) => {
-              const gKey = `${g.vendorId}-${g.date}`;
-              const isOpen = expandedGroup === gKey;
-              const effTotal = groupEffectiveTotal(g);
-              return (
-                <div key={gKey} style={{ borderTop: `1px solid ${LINE}` }}>
-                  {/* Header row — tap to expand */}
-                  <div onClick={() => setExpandedGroup(isOpen ? null : gKey)} style={{ padding: '12px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>{g.vendorName}</div>
-                      <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{g.date} · {g.entries.length} item{g.entries.length !== 1 ? 's' : ''} · {isOpen ? '▲ collapse' : '▼ view & edit'}</div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ fontWeight: 800, color: AMBER, fontSize: 16 }}>₹{effTotal.toLocaleString('en-IN')}</div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setPayModal(g); setPayMode('cash'); setPayRef(''); setPayNote(''); }}
-                        style={{ background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
-                      >
-                        Pay
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Expanded editable items */}
-                  {isOpen && (
-                    <div style={{ background: '#F6F3EA', borderRadius: 10, padding: '10px 12px', marginBottom: 8 }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px 52px 72px', gap: 6, marginBottom: 6 }}>
-                        {['ITEM', 'QTY', 'UOM', 'RATE (₹)'].map((h) => <div key={h} style={{ fontSize: 9, fontWeight: 700, color: MUTED }}>{h}</div>)}
-                      </div>
-                      {g.entries.map((e) => {
-                        const d = draftEdits[e.id] || {};
-                        const effQty = d.qty !== undefined ? d.qty : String(e.qty);
-                        const effPrice = d.unitPrice !== undefined ? d.unitPrice : String(e.unitPrice);
-                        const eff = getEffective(e);
-                        const changed = d.qty !== undefined || d.unitPrice !== undefined;
-                        return (
-                          <div key={e.id} style={{ borderTop: `1px solid ${LINE}`, paddingTop: 8, marginTop: 4 }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px 52px 72px', gap: 6, alignItems: 'center' }}>
-                              <div style={{ fontWeight: 600, fontSize: 12 }}>{e.itemName}</div>
-                              <input type="number" value={effQty} onChange={(ev) => updateDraft(e.id, 'qty', ev.target.value)} style={{ border: `1px solid ${changed ? AMBER : LINE}`, borderRadius: 6, padding: '5px 6px', fontSize: 12, background: changed ? '#FFFBF3' : '#fff', width: '100%', boxSizing: 'border-box' }} />
-                              <div style={{ fontSize: 11, fontWeight: 700, color: MUTED, textAlign: 'center' }}>{e.unit}</div>
-                              <input type="number" value={effPrice} onChange={(ev) => updateDraft(e.id, 'unitPrice', ev.target.value)} style={{ border: `1px solid ${changed ? AMBER : LINE}`, borderRadius: 6, padding: '5px 6px', fontSize: 12, background: changed ? '#FFFBF3' : '#fff', width: '100%', boxSizing: 'border-box' }} />
-                            </div>
-                            <div style={{ textAlign: 'right', fontSize: 11, color: changed ? AMBER : MUTED, marginTop: 2 }}>
-                              Total: ₹{eff.total.toLocaleString('en-IN')}{changed ? ' ✏️' : ''}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
-                        <span style={{ fontWeight: 800, color: AMBER, fontSize: 13 }}>Revised: ₹{effTotal.toLocaleString('en-IN')}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-        </Card>
-      )}
-
-      {/* Payment modal — bottom sheet style */}
-      {payModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 200 }}>
-          <div style={{ background: '#fff', borderRadius: '18px 18px 0 0', padding: '24px 20px 32px', width: '100%', maxWidth: 420, maxHeight: '88vh', overflowY: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>Record payment</div>
-              <button onClick={() => setPayModal(null)} style={{ background: 'none', border: 'none', fontSize: 20, color: MUTED, cursor: 'pointer' }}>✕</button>
-            </div>
-
-            {/* Breakdown */}
-            <div style={{ background: '#F6F3EA', borderRadius: 12, padding: '14px 14px', marginBottom: 18 }}>
-              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 2 }}>{payModal.vendorName}</div>
-              <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>{payModal.date}</div>
-              {payModal.entries.map((e) => {
-                const eff = getEffective(e);
-                const changed = draftEdits[e.id] !== undefined;
-                return (
-                  <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderTop: `1px solid ${LINE}`, fontSize: 12 }}>
-                    <span style={{ color: changed ? AMBER : MUTED }}>{e.itemName} · {eff.qty} {e.unit} @ ₹{eff.unitPrice}/{e.unit}{changed ? ' ✏️' : ''}</span>
-                    <span style={{ fontWeight: 700, color: changed ? AMBER : INK }}>₹{eff.total.toLocaleString('en-IN')}</span>
-                  </div>
-                );
-              })}
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `2px solid ${LINE}`, marginTop: 8, paddingTop: 10 }}>
-                <span style={{ fontWeight: 700 }}>Total to pay</span>
-                <span style={{ fontWeight: 900, fontSize: 18, color: LEAF }}>₹{groupEffectiveTotal(payModal).toLocaleString('en-IN')}</span>
-              </div>
-            </div>
-
-            {/* Payment mode */}
-            <div style={smallLabel}>PAYMENT MODE</div>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-              {[{ key: 'cash', label: '💵 Cash' }, { key: 'upi', label: '📱 UPI' }, { key: 'bank', label: '🏦 Bank' }, { key: 'cheque', label: '📄 Cheque' }].map((m) => (
-                <button key={m.key} onClick={() => setPayMode(m.key)} style={{ flex: 1, padding: '8px 4px', borderRadius: 8, border: `1.5px solid ${payMode === m.key ? LEAF : LINE}`, background: payMode === m.key ? '#EAF3DE' : '#fff', color: payMode === m.key ? LEAF_DARK : INK, fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
-                  {m.label}
-                </button>
-              ))}
-            </div>
-
-            {payMode !== 'cash' && (
-              <>
-                <div style={smallLabel}>{payMode === 'upi' ? 'UPI / TRANSACTION ID' : payMode === 'bank' ? 'NEFT / RTGS REF NO.' : 'CHEQUE NO.'}</div>
-                <Field placeholder={payMode === 'cheque' ? 'e.g. 004521' : 'e.g. TXN1234567'} value={payRef} onChange={(e) => setPayRef(e.target.value)} />
-              </>
-            )}
-            <div style={smallLabel}>NOTE (OPTIONAL)</div>
-            <Field placeholder="e.g. Full settlement, partial pending..." value={payNote} onChange={(e) => setPayNote(e.target.value)} />
-
-            <PrimaryBtn onClick={confirmPayment} color={LEAF}>
-              Confirm payment — ₹{groupEffectiveTotal(payModal).toLocaleString('en-IN')}
-            </PrimaryBtn>
-          </div>
-        </div>
-      )}
+      {payModalEl}
 
       {/* ---- Order Placed ---- */}
       {placedOrders.length > 0 && (
@@ -1371,7 +1569,7 @@ function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch }) {
   const [purchaseDate, setPurchaseDate] = useState(b.purchaseDate || '');
 
   const batchOrders = useMemo(() => orders.filter((o) => o.batchId === b.id), [orders, b.id]);
-  const articleCount = batchOrders.length;
+  const articleCount = new Set(batchOrders.map((o) => o.articleName || o.product)).size;
   const totalQty = batchOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0);
   const fulfilmentDate = batchOrders[0]?.fulfilmentDate || '';
 
@@ -1512,6 +1710,8 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     const remaining = [];
     const compiledMap = {};
     const batchId = `BATCH-${Date.now().toString(36).toUpperCase().slice(-6)}`;
+    const orderIdBase = Date.now().toString(36).toUpperCase().slice(-5);
+    let orderSeq = 0;
     pendingIndent.rows.forEach((r) => {
       if (!isRowReady(r) || !selectedRowKeys.has(r.key)) { remaining.push(r); return; }
       const item = items.find((it) => it.id === r.mappedItemId);
@@ -1519,24 +1719,34 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
       const alias = getRowAlias(r);
       const packSize = Number(alias?.packSize) || 1;
       const packUnit = alias?.packUnit || item.uom;
-      const finalQty = Math.round(r.qty * packSize * 100) / 100;
-      onImport({
-        id: `${pendingIndent.platform.slice(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`,
-        platform: pendingIndent.platform,
-        product: item.name,
-        articleName: r.rawName,
-        qty: finalQty,
-        unit: item.uom,
-        status: 'pending',
-        fulfilmentDate: pendingIndent.fulfilmentDate || '',
-        packQty: r.qty,
-        packSize,
-        packUnit,
-        batchId,
-      });
       const key = `${item.name}__${item.uom}`;
       if (!compiledMap[key]) compiledMap[key] = { itemName: item.name, unit: item.uom, qty: 0 };
-      compiledMap[key].qty += finalQty;
+      // One order per store when the indent has per-store columns (Flipkart); otherwise a
+      // single order for the platform's default store.
+      const storeEntries = r.storeQtys && Object.keys(r.storeQtys).length > 0
+        ? Object.entries(r.storeQtys)
+        : [[PLATFORM_DEFAULT_STORE[pendingIndent.platform] || '', r.qty]];
+      storeEntries.forEach(([store, storePacks]) => {
+        if (!(storePacks > 0)) return;
+        const storeQty = Math.round(storePacks * packSize * 100) / 100;
+        orderSeq += 1;
+        onImport({
+          id: `${pendingIndent.platform.slice(0, 3).toUpperCase()}-${orderIdBase}${orderSeq}`,
+          platform: pendingIndent.platform,
+          store,
+          product: item.name,
+          articleName: r.rawName,
+          qty: storeQty,
+          unit: item.uom,
+          status: 'pending',
+          fulfilmentDate: pendingIndent.fulfilmentDate || '',
+          packQty: storePacks,
+          packSize,
+          packUnit,
+          batchId,
+        });
+        compiledMap[key].qty += storeQty;
+      });
     });
     const compiled = Object.values(compiledMap);
     if (compiled.length > 0) onCreateIndentBatch({ id: batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [] });
@@ -1646,7 +1856,7 @@ function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders:
       {open && groupOrders.map((o) => (
         <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${LINE}`, padding: '8px 12px' }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{o.id} · {o.platform}</div>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>{o.id} · {o.platform}{orderStore(o) ? ` · ${storeLabel(orderStore(o))}` : ''}</div>
             <div style={{ fontSize: 12, color: MUTED }}>{o.articleName || o.product} · {o.qty} {o.unit}{o.fulfilmentDate ? ` · due ${o.fulfilmentDate}` : ''}</div>
           </div>
           <StatusPill status={o.status} />
@@ -1698,9 +1908,10 @@ function OrdersListCard({ orders, indentBatches }) {
 }
 
 // ---------- Purchases ----------
-const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS', 'CUT'];
+// CUT is intentionally not listed: processed (CUT) items are never bought directly — only their raw ingredients are.
+const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS'];
 
-function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches }) {
+function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches }) {
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
@@ -1793,12 +2004,62 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     return Array.from(dates).sort();
   }, [orders, indentBatches]);
 
-  const neededByProduct = useMemo(() => {
+  // Demand per raw/buyable item. Orders for a processed (CUT) item are never added directly:
+  // they are broken down into their recipe ingredients (recursively, so a recipe can use
+  // another CUT item). CUT items that have no recipe yet are collected in `cutWithoutRecipe`
+  // so they can be flagged instead of silently landing in the purchase list.
+  const neededData = useMemo(() => {
     const map = {};
+    const missing = {};
+    const nrm = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    const cityIds = new Set(items.map((it) => it.id));
+    // Items are per-city but recipes are shared, so resolve recipe items across ALL cities.
+    const itemById = {};
+    const catByName = {};
+    (allItems || []).forEach((it) => { itemById[it.id] = it; catByName[nrm(it.name)] = it.category; });
+    items.forEach((it) => { itemById[it.id] = it; catByName[nrm(it.name)] = it.category; });
+
+    const recipesByOutput = {};
+    recipes.forEach((r) => {
+      const out = itemById[r.outputItemId];
+      if (!out) return;
+      const k = nrm(out.name);
+      (recipesByOutput[k] = recipesByOutput[k] || []).push(r);
+    });
+    const pickRecipes = (name) => {
+      const all = recipesByOutput[nrm(name)] || [];
+      if (all.length === 0) return [];
+      // Prefer recipes made for this city's own item; otherwise reuse one other city's recipe (never sum duplicates across cities).
+      const local = all.filter((r) => cityIds.has(r.outputItemId));
+      if (local.length > 0) return local;
+      return all.filter((r) => r.outputItemId === all[0].outputItemId);
+    };
+
     const addDemand = (name, qty, unit) => {
       map[name] = map[name] || { needed: 0, unit };
       map[name].needed += qty;
     };
+    const explode = (name, qty, unit, depth) => {
+      const recs = depth < 5 ? pickRecipes(name) : [];
+      if (recs.length > 0) {
+        recs.forEach((recipe) => {
+          (recipe.ingredients || []).forEach((ing) => {
+            const ingItem = itemById[ing.itemId];
+            if (!ingItem) return;
+            const norm = normalizeIngredientQty(ing.qtyPerUnit * qty, ing.unit);
+            explode(ingItem.name, norm.value, norm.unit, depth + 1);
+          });
+        });
+        return;
+      }
+      if (catByName[nrm(name)] === 'CUT') {
+        missing[name] = missing[name] || { qty: 0, unit };
+        missing[name].qty += qty;
+        return;
+      }
+      addDemand(name, qty, unit);
+    };
+
     // An order counts toward "needing purchase" once it's actually been released to
     // Purchase Manager — orders with no batch (added manually) always count, since
     // there's no release step for those.
@@ -1807,23 +2068,11 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
       .filter((o) => o.status !== 'dispatched')
       .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
       .filter((o) => fulfilmentDateFilter === 'ALL' || o.fulfilmentDate === fulfilmentDateFilter)
-      .forEach((o) => {
-        const matchingRecipes = recipes.filter((r) => items.find((it) => it.id === r.outputItemId)?.name === o.product);
-        if (matchingRecipes.length > 0) {
-          matchingRecipes.forEach((recipe) => {
-            recipe.ingredients.forEach((ing) => {
-              const ingItem = items.find((it) => it.id === ing.itemId);
-              if (!ingItem) return;
-              const norm = normalizeIngredientQty(ing.qtyPerUnit * o.qty, ing.unit);
-              addDemand(ingItem.name, norm.value, norm.unit);
-            });
-          });
-        } else {
-          addDemand(o.product, o.qty, o.unit);
-        }
-      });
-    return map;
-  }, [orders, recipes, items, indentBatches, fulfilmentDateFilter]);
+      .forEach((o) => explode(o.product, o.qty, o.unit, 0));
+    return { map, missing };
+  }, [orders, recipes, items, allItems, indentBatches, fulfilmentDateFilter]);
+  const neededByProduct = neededData.map;
+  const cutWithoutRecipe = neededData.missing;
 
   // "Available stock" = latest nightly stock count (if any) as baseline, plus every
   // actual completed purchase made since — "requirement" rows (from released indents /
@@ -1853,7 +2102,8 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     const vendorItemIds = vendorFilterId ? new Set(vendors.find((v) => v.id === vendorFilterId)?.itemIds || []) : null;
     let result = items
       .filter((it) => neededByProduct[it.name])
-      .filter((it) => categoryFilter === 'ALL' || it.category === categoryFilter)
+      .filter((it) => it.category !== 'CUT')
+      .filter((it) => categoryFilter === 'ALL' || categoryFilter === 'CUT' || it.category === categoryFilter)
       .filter((it) => !vendorItemIds || vendorItemIds.has(it.id))
       .map((it) => {
         const needed = neededByProduct[it.name].needed;
@@ -2079,7 +2329,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
     );
   }
 
-  const hasActiveFilters = categoryFilter !== 'ALL' || Number(bufferPercent) !== 0 || !!vendorFilterId || qtySort !== 'none' || fulfilmentDateFilter !== 'ALL';
+  const hasActiveFilters = (categoryFilter !== 'ALL' && categoryFilter !== 'CUT') || Number(bufferPercent) !== 0 || !!vendorFilterId || qtySort !== 'none' || fulfilmentDateFilter !== 'ALL';
   const clearFilters = () => { setCategoryFilter('ALL'); setBufferPercent('0'); setVendorFilterId(''); setQtySort('none'); setFulfilmentDateFilter('ALL'); };
 
   const confirmShareOrder = () => {
@@ -2128,7 +2378,7 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
             <option value="">All vendors</option>
             {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
-          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          <select value={PURCHASE_CATEGORY_OPTIONS.includes(categoryFilter) ? categoryFilter : 'ALL'} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             {PURCHASE_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
@@ -2161,6 +2411,11 @@ function PurchasesTab({ purchases, orders, items, recipes, vendors, vendorLedger
       </Card>
 
       <Card>
+        {Object.keys(cutWithoutRecipe).length > 0 && (
+          <div style={{ background: '#FFF4D6', border: '1px solid #E8C766', color: '#6B4E00', borderRadius: 8, padding: '8px 10px', fontSize: 11, marginBottom: 10 }}>
+            <strong>Recipe missing:</strong> these CUT items have orders but no recipe, so their raw material is not in this list — {Object.entries(cutWithoutRecipe).map(([n, v]) => `${n} (${Math.round(v.qty * 100) / 100} ${v.unit})`).join(', ')}. Add a recipe in Cut &amp; Process.
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <div style={sectionTitle}>Items ({filteredItems.length})</div>
           {selectMode ? (
@@ -2301,6 +2556,12 @@ function StockCountTab({ items, stockCounts, onRecord }) {
 
   const countedToday = filteredItems.filter((it) => countsForDate[it.id] !== undefined).length;
 
+  // Items already counted for this date sink to the bottom; uncounted ones stay on top.
+  const sortedItems = [
+    ...filteredItems.filter((it) => countsForDate[it.id] === undefined),
+    ...filteredItems.filter((it) => countsForDate[it.id] !== undefined),
+  ];
+
   return (
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 12 }}>
@@ -2317,7 +2578,7 @@ function StockCountTab({ items, stockCounts, onRecord }) {
       </Card>
 
       <Card>
-        {filteredItems.map((it) => (
+        {sortedItems.map((it) => (
           <StockCountRow
             key={it.id}
             item={it}
@@ -3087,6 +3348,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
   const [qtySort, setQtySort] = usePersistedState('fnv_packaging_qtysort', 'none'); // 'none' | 'asc' | 'desc'
   const [dateFilter, setDateFilter] = usePersistedState('fnv_packaging_date', '');
   const [selectedKey, setSelectedKey] = useState(null);
+  const [itemSearch, setItemSearch] = useState('');
 
   const categoryByProduct = useMemo(() => {
     const map = {};
@@ -3129,16 +3391,19 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
         });
         if (qtySort === 'asc') targets.sort((a, b) => (a.hasPack ? a.targetPacks : a.qty) - (b.hasPack ? b.targetPacks : b.qty));
         else if (qtySort === 'desc') targets.sort((a, b) => (b.hasPack ? b.targetPacks : b.qty) - (a.hasPack ? a.targetPacks : a.qty));
+        const term = itemSearch.trim().toLowerCase();
+        if (term) targets = targets.filter((t) => `${t.articleName} ${t.product}`.toLowerCase().includes(term));
         // Items still needing work stay on top; fully packed ones sink to the bottom.
         targets.sort((a, b) => (a.isComplete === b.isComplete ? 0 : a.isComplete ? 1 : -1));
         return { date, targets };
       })
+      .filter((g) => g.targets.length > 0)
       .sort((a, b) => {
         if (a.date === 'No date') return 1;
         if (b.date === 'No date') return -1;
         return a.date.localeCompare(b.date);
       });
-  }, [filteredOrders, qtySort, packingProgress]);
+  }, [filteredOrders, qtySort, packingProgress, itemSearch]);
 
   const categoriesPresent = useMemo(() => ['All', ...Array.from(new Set(items.map((it) => it.category).filter(Boolean)))], [items]);
 
@@ -3184,6 +3449,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
             <button onClick={() => setDateFilter('')} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 11, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>Clear</button>
           )}
         </div>
+        <Field placeholder="Search item…" value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} style={{ marginTop: 8, marginBottom: 0 }} />
       </Card>
 
       {groupedByDate.map(({ date, targets }) => (
@@ -3388,11 +3654,23 @@ function DispatchTab({ orders, crates, dispatchLog, onDispatchBatch }) {
     .filter((o) => o.status === 'packed')
     .map((o) => ({ ...o, remaining: Math.max(0, Math.round((o.qty - (o.dispatchedQty || 0) - (o.shortQty || 0)) * 100) / 100) })),
   [orders]);
-  const dispatched = orders.filter((o) => o.status === 'dispatched');
 
-  const [view, setView] = useState('dispatch'); // 'dispatch' | 'history' | 'all'
+  const [view, setView] = useState('dispatch'); // 'dispatch' | 'history'
+  const [channel, setChannel] = usePersistedState('fnv_dispatch_channel', PLATFORMS[0]);
+  const [storeSel, setStoreSel] = usePersistedState('fnv_dispatch_store', '');
   const [selected, setSelected] = useState([]);
   const [showModal, setShowModal] = useState(false);
+
+  // Channel -> its stores (Blinkit has one, Flipkart has one per dark store).
+  const activeChannel = PLATFORMS.includes(channel) ? channel : PLATFORMS[0];
+  const storeOptions = useMemo(() => storeOptionsFor(orders, activeChannel), [orders, activeChannel]);
+  const activeStore = storeOptions.find((s) => s.value === storeSel) || storeOptions[0] || null;
+  const visiblePacked = useMemo(
+    () => packed.filter((o) => o.platform === activeChannel && activeStore && orderStore(o) === activeStore.store),
+    [packed, activeChannel, activeStore],
+  );
+  const changeChannel = (c) => { setChannel(c); setStoreSel(''); setSelected([]); };
+  const changeStore = (v) => { setStoreSel(v); setSelected([]); };
 
   const toggleSelect = (id) => setSelected((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
@@ -3411,19 +3689,30 @@ function DispatchTab({ orders, crates, dispatchLog, onDispatchBatch }) {
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
         <Chip label="Dispatch" active={view === 'dispatch'} onClick={() => setView('dispatch')} />
         <Chip label={`History (${dispatchLog.length})`} active={view === 'history'} onClick={() => setView('history')} />
-        <Chip label={`All dispatched (${dispatched.length})`} active={view === 'all'} onClick={() => setView('all')} />
       </div>
+
+      {view === 'dispatch' && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <select value={activeChannel} onChange={(e) => changeChannel(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}>
+            {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select value={activeStore ? activeStore.value : ''} onChange={(e) => changeStore(e.target.value)} disabled={storeOptions.length === 0} style={{ flex: '1.4 1 0', minWidth: 0, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}>
+            {storeOptions.length === 0 && <option value="">No stores yet</option>}
+            {storeOptions.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+        </div>
+      )}
 
       {view === 'dispatch' && (
         <>
           <Card style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
               <div style={{ flex: 1 }}>
-                <div style={sectionTitle}>Packed — ready ({packed.length})</div>
+                <div style={sectionTitle}>Packed — ready ({visiblePacked.length})</div>
                 <div style={hint}>An article only shows up here once it's been fully resolved in Packaging — either fully packed, or packed with the rest marked short. Quantities aren't editable here; go back to Packaging to change them.</div>
               </div>
             </div>
-            {packed.map((o) => (
+            {visiblePacked.map((o) => (
               <div key={o.id} style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div onClick={() => toggleSelect(o.id)} style={{ width: 18, height: 18, borderRadius: 4, border: `1.5px solid ${LINE}`, background: selected.includes(o.id) ? LEAF : '#fff', cursor: 'pointer', flexShrink: 0 }} />
@@ -3435,7 +3724,7 @@ function DispatchTab({ orders, crates, dispatchLog, onDispatchBatch }) {
                 </div>
               </div>
             ))}
-            {packed.length === 0 && <div style={hint}>Nothing packed yet — resolve articles in Packaging first.</div>}
+            {visiblePacked.length === 0 && <div style={hint}>Nothing packed yet for this store — resolve articles in Packaging first.</div>}
           </Card>
         </>
       )}
@@ -3461,19 +3750,6 @@ function DispatchTab({ orders, crates, dispatchLog, onDispatchBatch }) {
             </div>
           ))}
           {dispatchLog.length === 0 && <div style={hint}>No dispatches yet.</div>}
-        </Card>
-      )}
-
-      {view === 'all' && (
-        <Card>
-          <div style={sectionTitle}>All dispatched ({dispatched.length})</div>
-          {dispatched.map((o) => (
-            <div key={o.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
-              <div style={{ fontWeight: 700, fontSize: 13 }}>{o.articleName || o.product}</div>
-              <div style={{ fontSize: 11, color: MUTED }}>{o.qty} {o.unit} · {o.id}{o.shortQty > 0 ? ` · ${o.shortQty} ${o.unit} short` : ''}</div>
-            </div>
-          ))}
-          {dispatched.length === 0 && <div style={hint}>No dispatched orders yet.</div>}
         </Card>
       )}
 
