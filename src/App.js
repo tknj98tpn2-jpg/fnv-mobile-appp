@@ -8,7 +8,7 @@ import {
 import {
   Menu, X, LayoutDashboard, Tag, Scissors, ClipboardList, ShoppingBag,
   PackageCheck, Truck, Truck as TruckIcon, Boxes, Users, Upload, FileSpreadsheet, AlertCircle,
-  Trash2, Pencil, Plus, Sprout, ChevronRight, ArrowLeft, Download, Store,
+  Trash2, Pencil, Plus, ChevronRight, ArrowLeft, Download, Store,
   Search, Layers, IndianRupee, TrendingUp,
 } from 'lucide-react';
 
@@ -51,9 +51,7 @@ const BG = '#F6F3EA';
 const SPACE = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 28 };
 const RADIUS = { sm: 6, md: 8, lg: 10, xl: 14 };
 const SHADOW_SM = '0 1px 2px rgba(32,36,30,0.05)';
-const SHADOW_MD = '0 4px 16px rgba(32,36,30,0.08)';
 const TEXT_SECONDARY = '#57584B';
-const BORDER_STRONG = '#D5CFB5';
 const STATUS_COLORS = {
   success: { bg: '#EAF3DE', fg: LEAF_DARK },
   info:    { bg: '#E6F1FB', fg: '#1B5E8C' },
