@@ -687,7 +687,7 @@ export default function FnvMobilePreview() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {tab === 'dashboard' && <DashboardTab orders={cityOrders} purchases={cityPurchases} items={cityItems} crates={cityCrates} />}
+          {tab === 'dashboard' && <DashboardTab orders={cityOrders} purchases={cityPurchases} crates={cityCrates} packingProgress={packingProgress} dispatchLog={cityDispatchLog} />}
           {tab === 'items' && <ItemsTab items={cityItems} onAdd={addItem} onAddBulk={addItemsBulk} onUpdate={updateItem} onDelete={deleteItem} />}
           {tab === 'vendors' && (
             <VendorsTab items={cityItems} vendors={cityVendors} vendorLedger={cityVendorLedger} placedOrders={placedOrders} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} />
@@ -778,19 +778,137 @@ function Text({ children, style }) {
 }
 
 // ---------- Dashboard ----------
-function DashboardTab({ orders, purchases, items, crates }) {
-  const pending = orders.filter((o) => o.status === 'pending').length;
-  const dispatched = orders.filter((o) => o.status === 'dispatched').length;
-  const totalSpend = purchases.reduce((s, p) => s + p.cost, 0);
+// For one channel (Blinkit/Flipkart) on one date: how much of today's ordered qty
+// has been dispatched (reads each order's own dispatchedQty directly), and how much
+// has been packed (grouped by the exact same product+platform+packSize key the
+// Packaging screen itself uses, so this ring always agrees with that screen).
+function computeChannelDayProgress(orders, packingProgress, platform, dateStr) {
+  const dayOrders = orders.filter((o) => o.platform === platform && o.fulfilmentDate === dateStr);
+
+  let totalQty = 0, dispatchedQty = 0;
+  dayOrders.forEach((o) => {
+    totalQty += Number(o.qty) || 0;
+    dispatchedQty += Number(o.dispatchedQty) || 0;
+  });
+  const dispatchPercent = totalQty > 0 ? Math.min(100, Math.round((dispatchedQty / totalQty) * 100)) : 0;
+
+  const groups = {};
+  dayOrders.forEach((o) => {
+    const hasPack = !!(o.packQty && o.packSize);
+    const cityKey = o.city || CITIES[0];
+    const key = hasPack
+      ? `${cityKey}__${dateStr}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`
+      : `${cityKey}__${dateStr}__${o.product}__${o.unit}`;
+    if (!groups[key]) groups[key] = { key, hasPack, targetPacks: 0, doneViaStatus: 0 };
+    if (hasPack) {
+      groups[key].targetPacks += Number(o.packQty) || 0;
+      // An order already at 'packed' or 'dispatched' status necessarily finished
+      // packing to get there (that's how status advances), regardless of whether a
+      // packingProgress record still exists for it — this is the more reliable signal.
+      if (o.status === 'packed' || o.status === 'dispatched') groups[key].doneViaStatus += Number(o.packQty) || 0;
+    }
+  });
+  // Pack-based totals — this is what "total indent" means in this business (a count
+  // of packs to prepare), so it's exposed as its own clean whole number, separate
+  // from the blended percentage below (which also folds in non-pack, sold-by-weight items).
+  let indentPacks = 0, packedPacks = 0;
+  Object.values(groups).forEach((g) => {
+    if (!g.hasPack) return;
+    indentPacks += g.targetPacks;
+    const progress = packingProgress[g.key] || { packedQty: 0, shortQty: 0 };
+    const viaProgress = Math.min(g.targetPacks, (progress.packedQty || 0) + (progress.shortQty || 0));
+    packedPacks += Math.max(g.doneViaStatus, viaProgress);
+  });
+  let totalTarget = indentPacks, totalDone = packedPacks;
+  // Non-pack items have no granular packingProgress entry of their own — the best
+  // available signal is the order's own status (packed/dispatched means it's done).
+  dayOrders.filter((o) => !(o.packQty && o.packSize)).forEach((o) => {
+    totalTarget += Number(o.qty) || 0;
+    if (o.status === 'packed' || o.status === 'dispatched') totalDone += Number(o.qty) || 0;
+  });
+  const packagePercent = totalTarget > 0 ? Math.min(100, Math.round((totalDone / totalTarget) * 100)) : 0;
+
+  return { dispatchPercent, packagePercent, orderCount: dayOrders.length, indentPacks, packedPacks };
+}
+
+// Two concentric activity-style rings for one channel: the outer ring is packaging
+// progress, the inner ring is dispatch progress, and the channel name sits in the
+// centre — dispatch can only complete once packing has, so outer-then-inner filling
+// mirrors the real order of work.
+function ChannelProgressRings({ channel, dispatchPercent, packagePercent, orderCount }) {
+  const size = 116;
+  const c = size / 2;
+  const outerR = 50;
+  const innerR = 37;
+  const outerCirc = 2 * Math.PI * outerR;
+  const innerCirc = 2 * Math.PI * innerR;
+  const outerOffset = outerCirc * (1 - packagePercent / 100);
+  const innerOffset = innerCirc * (1 - dispatchPercent / 100);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, flex: 1 }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle cx={c} cy={c} r={outerR} fill="none" stroke={LINE} strokeWidth={8} />
+        <circle cx={c} cy={c} r={innerR} fill="none" stroke={LINE} strokeWidth={8} />
+        <circle
+          cx={c} cy={c} r={outerR} fill="none" stroke={AMBER} strokeWidth={8} strokeLinecap="round"
+          strokeDasharray={outerCirc} strokeDashoffset={outerOffset} transform={`rotate(-90 ${c} ${c})`}
+          style={{ transition: 'stroke-dashoffset 0.4s ease' }}
+        />
+        <circle
+          cx={c} cy={c} r={innerR} fill="none" stroke={LEAF} strokeWidth={8} strokeLinecap="round"
+          strokeDasharray={innerCirc} strokeDashoffset={innerOffset} transform={`rotate(-90 ${c} ${c})`}
+          style={{ transition: 'stroke-dashoffset 0.4s ease' }}
+        />
+        <text x={c} y={c - 3} textAnchor="middle" fontSize="13" fontWeight="800" fill={INK}>{channel}</text>
+        <text x={c} y={c + 13} textAnchor="middle" fontSize="9" fill={MUTED}>{orderCount} order{orderCount !== 1 ? 's' : ''}</text>
+      </svg>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 10, color: MUTED, width: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 4, background: AMBER, flexShrink: 0 }} />
+          Packed {packagePercent}%
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 4, background: LEAF, flexShrink: 0 }} />
+          Dispatched {dispatchPercent}%
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardTab({ orders, purchases, crates, packingProgress, dispatchLog }) {
+  const today = new Date().toISOString().split('T')[0];
+  const todayTrips = dispatchLog.filter((d) => d.date === today).length;
+  const todaySpend = purchases.filter((p) => p.date === today).reduce((s, p) => s + p.cost, 0);
+  const blinkitProgress = computeChannelDayProgress(orders, packingProgress, 'Blinkit', today);
+  const flipkartProgress = computeChannelDayProgress(orders, packingProgress, 'Flipkart', today);
   return (
     <div style={{ padding: 16 }}>
+      <Card style={{ marginBottom: 10 }}>
+        <div style={{ ...sectionTitle, marginBottom: 10 }}>Today's progress</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ChannelProgressRings channel="Blinkit" {...blinkitProgress} />
+          <ChannelProgressRings channel="Flipkart" {...flipkartProgress} />
+        </div>
+      </Card>
       <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-        <Card style={{ flex: 1 }}><div style={hint}>Active items</div><div style={{ fontSize: 22, fontWeight: 800 }}>{items.length}</div></Card>
-        <Card style={{ flex: 1 }}><div style={hint}>Pending orders</div><div style={{ fontSize: 22, fontWeight: 800, color: AMBER }}>{pending}</div></Card>
+        <Card style={{ flex: 1 }}>
+          <div style={hint}>Blinkit</div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{blinkitProgress.indentPacks}</div>
+          <div style={{ fontSize: 10, color: MUTED, marginTop: -2, marginBottom: 4 }}>total indent</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: LEAF }}>{blinkitProgress.packedPacks} packed</div>
+        </Card>
+        <Card style={{ flex: 1 }}>
+          <div style={hint}>Flipkart</div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{flipkartProgress.indentPacks}</div>
+          <div style={{ fontSize: 10, color: MUTED, marginTop: -2, marginBottom: 4 }}>total indent</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: LEAF }}>{flipkartProgress.packedPacks} packed</div>
+        </Card>
       </div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-        <Card style={{ flex: 1 }}><div style={hint}>Dispatched</div><div style={{ fontSize: 22, fontWeight: 800, color: LEAF }}>{dispatched}</div></Card>
-        <Card style={{ flex: 1 }}><div style={hint}>Purchase spend</div><div style={{ fontSize: 18, fontWeight: 800, color: TOMATO }}>₹{totalSpend.toLocaleString('en-IN')}</div></Card>
+        <Card style={{ flex: 1 }}><div style={hint}>Total trips today</div><div style={{ fontSize: 22, fontWeight: 800, color: LEAF }}>{todayTrips}</div></Card>
+        <Card style={{ flex: 1 }}><div style={hint}>Today's purchase</div><div style={{ fontSize: 18, fontWeight: 800, color: TOMATO }}>₹{todaySpend.toLocaleString('en-IN')}</div></Card>
       </div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
         <Card style={{ flex: 1 }}><div style={hint}>Crates</div><div style={{ fontSize: 20, fontWeight: 800 }}>{crates.crates}</div></Card>
