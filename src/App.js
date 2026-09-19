@@ -104,8 +104,8 @@ const SEED_PURCHASES = [];
 const SEED_RECIPES = [];
 
 const SEED_ROLES = [
-  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, cutprocess: true, orders: true, purchase: true, stockcount: true, pricing: true, profitloss: true, packaging: true, dispatch: true, crates: true, users: true } },
-  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, cutprocess: false, orders: false, purchase: false, stockcount: true, pricing: false, profitloss: false, packaging: true, dispatch: true, crates: true, users: false } },
+  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, purchase: true, stockcount: true, spoilage: true, pricing: true, profitloss: true, packaging: true, dispatch: true, crates: true, users: true } },
+  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, purchase: false, stockcount: true, spoilage: false, pricing: false, profitloss: false, packaging: true, dispatch: true, crates: true, users: false } },
 ];
 
 const SEED_USERS = [];
@@ -372,6 +372,22 @@ export default function FnvMobilePreview() {
     setCurrentUser(null);
     window.localStorage.removeItem('fnv_current_user_id');
   };
+
+  // ── Role-based section access — the Roles & Permissions UI has always let
+  // someone tick/untick sections per role, but nothing ever actually read those
+  // values until now. This is the single source of truth for what a logged-in
+  // user's drawer and page routing are allowed to show.
+  const currentRole = currentUser ? roles.find((r) => r.id === currentUser.roleId) : null;
+  const visibleNav = NAV.filter((n) => hasPermission(currentRole?.permissions, n.key));
+  // If the active tab isn't one this user's role can see — because their role
+  // was just restricted, or a stale tab carried over from a previous session —
+  // drop them onto the first section they do have access to instead of leaving
+  // a restricted page rendered underneath.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (visibleNav.some((n) => n.key === tab)) return;
+    if (visibleNav[0]) setTab(visibleNav[0].key);
+  }, [currentUser, tab, visibleNav]);
 
   const fbUpdate = (col, id, patch)  => updateDoc(doc(db, col, id), patch);
   const fbDelete = (col, id)         => deleteDoc(doc(db, col, id));
@@ -677,7 +693,7 @@ export default function FnvMobilePreview() {
                 )}
               </div>
               <div style={{ padding: '10px 8px', flex: 1, overflowY: 'auto' }}>
-                {NAV.map((n) => (
+                {visibleNav.map((n) => (
                   <button
                     key={n.key}
                     onClick={() => { setTab(n.key); setDrawerOpen(false); }}
@@ -842,6 +858,16 @@ function VendorItemLinkerMobile({ vendorId, vendorItemIds, items, onToggle }) {
 }
 
 const COMPANY_NAME = 'NILGIRI FNV SUPPLIER COMPANY';
+
+// Role permissions were previously editable in the Users & Roles UI but never
+// actually enforced anywhere — every section was visible regardless. This is the
+// single gate now used everywhere access is checked. A missing role, or a section
+// a role has simply never been asked about yet (e.g. one added after the role was
+// created), defaults to allowed — only an explicit `false` actually hides it, so
+// existing roles never lose access to something they were silently already using.
+function hasPermission(permissions, key) {
+  return !permissions || permissions[key] !== false;
+}
 
 function generateOrderImage(order) {
   const canvas = document.createElement('canvas');
@@ -4311,7 +4337,7 @@ function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, on
                 {!inUse && <button onClick={() => onDeleteRole(r.id)} style={{ background: 'none', border: 'none', color: TOMATO, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Delete</button>}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', marginTop: 6 }}>
-                {PERMISSION_SECTIONS.map((s) => <Chip key={s.key} label={s.label} active={!!r.permissions[s.key]} onClick={() => onToggleRolePermission(r.id, s.key, !r.permissions[s.key])} />)}
+                {PERMISSION_SECTIONS.map((s) => <Chip key={s.key} label={s.label} active={hasPermission(r.permissions, s.key)} onClick={() => onToggleRolePermission(r.id, s.key, !hasPermission(r.permissions, s.key))} />)}
               </div>
             </div>
           );
