@@ -151,6 +151,22 @@ const NAV = [
 
 // Keeps a filter's value in localStorage so it survives leaving the section (or the
 // whole page reloading) — it only ever changes when the person picks something new.
+// Detects whether this is genuinely being viewed on a phone-width screen (a real
+// phone's own browser, or the installed PWA/APK) versus a wide desktop browser.
+// The decorative phone-mockup frame below only makes sense in the second case —
+// on an actual phone, the phone itself IS the frame, so drawing another one around
+// the content just wastes screen space and looks like a phone-inside-a-phone.
+function useViewportWidth() {
+  const [width, setWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 390);
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return width;
+}
+const REAL_PHONE_BREAKPOINT = 500;
+
 function usePersistedState(key, defaultValue) {
   const [state, setState] = useState(() => {
     try {
@@ -241,6 +257,8 @@ function MobileLoginScreen({ onLogin, error }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const viewportWidth = useViewportWidth();
+  const isRealPhone = viewportWidth < REAL_PHONE_BREAKPOINT;
 
   const submit = () => {
     if (!username.trim() || !password.trim()) return;
@@ -248,8 +266,12 @@ function MobileLoginScreen({ onLogin, error }) {
   };
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <div style={{ width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', padding: '0 28px' }}>
+    <div style={isRealPhone
+      ? { display: 'flex', justifyContent: 'center', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }
+      : { display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+      <div style={isRealPhone
+        ? { width: '100%', minHeight: '100vh', boxSizing: 'border-box', background: BG, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', padding: '0 28px' }
+        : { width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', padding: '0 28px' }}>
         <img src={LOGO_DATA_URI} alt="Nilgiri" style={{ width: 60, height: 'auto', display: 'block' }} />
         <p style={{ margin: '10px 0 2px', fontWeight: 800, fontSize: 17, color: INK }}>FNV Business App</p>
         <p style={{ margin: '0 0 20px', fontSize: 12, color: MUTED }}>Sign in to continue</p>
@@ -283,6 +305,8 @@ function MobileLoginScreen({ onLogin, error }) {
 export default function FnvMobilePreview() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tab, setTab] = useState('dashboard');
+  const viewportWidth = useViewportWidth();
+  const isRealPhone = viewportWidth < REAL_PHONE_BREAKPOINT;
 
   const [items, setItems] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -626,8 +650,12 @@ export default function FnvMobilePreview() {
   });
 
   if (!dbReady) return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <div style={{ width: 390, height: 760, background: '#fff', borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
+    <div style={isRealPhone
+      ? { display: 'flex', justifyContent: 'center', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }
+      : { display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+      <div style={isRealPhone
+        ? { width: '100%', minHeight: '100vh', boxSizing: 'border-box', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }
+        : { width: 390, height: 760, background: '#fff', borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
         <img src={LOGO_DATA_URI} alt="Nilgiri" style={{ width: 150, height: 'auto', display: 'block' }} />
         <div style={{ fontWeight: 700, fontSize: 16, color: INK }}>Connecting to database…</div>
       </div>
@@ -639,10 +667,19 @@ export default function FnvMobilePreview() {
   const isCityLocked = currentUser.city && currentUser.city !== 'All Cities';
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <div style={{ width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ height: 22, background: LEAF_DARK, flexShrink: 0 }} />
-        <div style={{ background: LEAF_DARK, color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+    <div style={isRealPhone
+      ? { display: 'flex', justifyContent: 'center', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }
+      : { display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+      <div style={isRealPhone
+        ? { width: '100%', height: '100vh', background: BG, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }
+        : { width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+        {/* On a real phone the device's own status bar is already visible above this
+            page — this strip only needs to exist as a mockup decoration on desktop.
+            On the real device we instead pad the header itself for any safe-area
+            inset (notch/home-indicator), which is 0px on an ordinary phone so it's
+            invisible unless this is ever run fullscreen as an installed PWA/APK. */}
+        {!isRealPhone && <div style={{ height: 22, background: LEAF_DARK, flexShrink: 0 }} />}
+        <div style={{ background: LEAF_DARK, color: '#fff', padding: '12px 16px', paddingTop: isRealPhone ? 'max(12px, env(safe-area-inset-top, 0px))' : '12px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <button onClick={() => setDrawerOpen(true)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex' }}>
             <Menu size={20} />
           </button>
@@ -2085,7 +2122,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
   const [fulfilmentDateFilter, setFulfilmentDateFilter] = usePersistedState('fnv_purchase_fulfilmentdate', 'ALL'); // 'ALL' = All Purchase
-  const [bufferPercent, setBufferPercent] = useState('0');
+  const [itemSearch, setItemSearch] = useState('');
   const [purchasedDate, setPurchasedDate] = useState('');
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [selectedVendorId, setSelectedVendorId] = useState('');
@@ -2267,13 +2304,13 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   }, [purchases, stockCounts]);
 
   const filteredItems = useMemo(() => {
-    const buffer = Number(bufferPercent) || 0;
     const vendorItemIds = vendorFilterId ? new Set(vendors.find((v) => v.id === vendorFilterId)?.itemIds || []) : null;
     let result = items
       .filter((it) => neededByProduct[it.name])
       .filter((it) => it.category !== 'CUT')
       .filter((it) => categoryFilter === 'ALL' || categoryFilter === 'CUT' || it.category === categoryFilter)
       .filter((it) => !vendorItemIds || vendorItemIds.has(it.id))
+      .filter((it) => !itemSearch.trim() || it.name.toLowerCase().includes(itemSearch.trim().toLowerCase()))
       .map((it) => {
         const needed = neededByProduct[it.name].needed;
         const unit = neededByProduct[it.name].unit;
@@ -2281,12 +2318,12 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
         const toBuy = Math.max(0, Math.round((needed - stock) * 100) / 100);
         return { ...it, needed, unit, stock, toBuy };
       })
-      // Already sufficiently stocked (stock beats needed by more than the buffer %) — no need to buy.
-      .filter((it) => it.stock <= it.needed * (1 + buffer / 100));
+      // Already sufficiently stocked — no need to buy right now.
+      .filter((it) => it.stock <= it.needed);
     if (qtySort === 'asc') result = result.slice().sort((a, b) => a.toBuy - b.toBuy);
     else if (qtySort === 'desc') result = result.slice().sort((a, b) => b.toBuy - a.toBuy);
     return result;
-  }, [items, neededByProduct, categoryFilter, vendorFilterId, vendors, stockByItem, bufferPercent, qtySort]);
+  }, [items, neededByProduct, categoryFilter, vendorFilterId, vendors, stockByItem, itemSearch, qtySort]);
 
   const purchasedList = useMemo(() => {
     return purchases
@@ -2498,8 +2535,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     );
   }
 
-  const hasActiveFilters = (categoryFilter !== 'ALL' && categoryFilter !== 'CUT') || Number(bufferPercent) !== 0 || !!vendorFilterId || qtySort !== 'none' || fulfilmentDateFilter !== 'ALL';
-  const clearFilters = () => { setCategoryFilter('ALL'); setBufferPercent('0'); setVendorFilterId(''); setQtySort('none'); setFulfilmentDateFilter('ALL'); };
+  const hasActiveFilters = (categoryFilter !== 'ALL' && categoryFilter !== 'CUT') || !!itemSearch.trim() || !!vendorFilterId || qtySort !== 'none' || fulfilmentDateFilter !== 'ALL';
+  const clearFilters = () => { setCategoryFilter('ALL'); setItemSearch(''); setVendorFilterId(''); setQtySort('none'); setFulfilmentDateFilter('ALL'); };
 
   const confirmShareOrder = () => {
     const orderItems = filteredItems
@@ -2564,8 +2601,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
-            <span style={{ fontSize: 11, color: MUTED }}>Buffer %</span>
-            <Field type="number" placeholder="0" value={bufferPercent} onChange={(e) => setBufferPercent(e.target.value)} style={{ marginBottom: 0 }} />
+            <span style={{ fontSize: 11, color: MUTED }}>Search item</span>
+            <Field placeholder="Search..." value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} style={{ marginBottom: 0 }} />
           </div>
         </div>
         {hasActiveFilters && (
