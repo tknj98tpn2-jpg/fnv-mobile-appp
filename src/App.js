@@ -496,6 +496,12 @@ export default function FnvMobilePreview() {
   };
   const importOrder = (o) => fbSetDoc('orders', o.id, { ...o, city: effectiveCity });
   const advanceMany = (ids, next) => { const b = writeBatch(db); ids.forEach((id) => b.update(doc(db,'orders',id), { status: next })); b.commit(); };
+  const excludeOldOrdersFromPurchase = (ids) => {
+    if (!ids.length) return;
+    const b = writeBatch(db);
+    ids.forEach((id) => b.update(doc(db, 'orders', id), { excludeFromPurchase: true }));
+    b.commit();
+  };
   const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p, city: effectiveCity });
   const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: effectiveCity })); b.commit(); };
   const removePurchasesByIds = (ids) => { const b = writeBatch(db); ids.forEach((id) => b.delete(doc(db,'purchases',id))); b.commit(); };
@@ -760,6 +766,7 @@ export default function FnvMobilePreview() {
               onImport={importOrder} onAddItem={addItem} onEnsureAlias={ensureAliasForCode} onUpdateAlias={updateAliasById}
               onCreateIndentBatch={createIndentBatch} onToggleReleaseBatch={toggleReleaseBatch}
               canAdvanceIndent={hasSensitivePermission(currentRole?.permissions, 'advanceindent')}
+              onExcludeOldFromPurchase={excludeOldOrdersFromPurchase}
             />
           )}
           {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} />}
@@ -2475,7 +2482,7 @@ function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch }) {
   );
 }
 
-function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch, canAdvanceIndent }) {
+function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch, canAdvanceIndent, onExcludeOldFromPurchase }) {
   const [platform, setPlatform] = useState('Blinkit');
   const [product, setProduct] = useState('');
   const [qty, setQty] = useState('');
@@ -2618,7 +2625,18 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
       });
     });
     const compiled = Object.values(compiledMap);
-    if (compiled.length > 0) onCreateIndentBatch({ id: batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [], isAdvance: !!pendingIndent.isAdvance });
+    if (compiled.length > 0) {
+      onCreateIndentBatch({ id: batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [], isAdvance: !!pendingIndent.isAdvance });
+      // A regular (non-advance) indent means today's real requirement has
+      // arrived — clear old, still-open orders out of the purchase list so a
+      // mandi-unavailable item from a past indent doesn't linger forever.
+      if (!pendingIndent.isAdvance) {
+        const staleIds = orders
+          .filter((o) => o.batchId && o.batchId !== batchId && o.status !== 'dispatched' && !o.isAdvance && !o.excludeFromPurchase)
+          .map((o) => o.id);
+        onExcludeOldFromPurchase(staleIds);
+      }
+    }
     if (!remaining.length && !pendingIndent.isAdvance) setIndentFulfilmentDate('');
     setPendingIndent(remaining.length ? { ...pendingIndent, rows: remaining } : null);
     setSelectedRowKeys(new Set(remaining.filter((r) => selectedRowKeys.has(r.key)).map((r) => r.key)));
@@ -2920,6 +2938,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     const dates = new Set();
     orders
       .filter((o) => o.status !== 'dispatched')
+      .filter((o) => !o.excludeFromPurchase)
       .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
       .forEach((o) => { if (o.fulfilmentDate) dates.add(o.fulfilmentDate); });
     return Array.from(dates).sort();
@@ -2987,6 +3006,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     const releasedBatchIds = new Set(indentBatches.filter((b) => b.released).map((b) => b.id));
     orders
       .filter((o) => o.status !== 'dispatched')
+      .filter((o) => !o.excludeFromPurchase)
       .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
       .filter((o) => fulfilmentDateFilter === 'ALL' || o.fulfilmentDate === fulfilmentDateFilter)
       .forEach((o) => explode(o.product, o.qty, o.unit, 0));
