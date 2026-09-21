@@ -744,7 +744,7 @@ export default function FnvMobilePreview() {
           {tab === 'attendance' && <AttendanceTab staff={cityStaff} attendance={staffAttendance} onMark={markAttendance} onClear={clearAttendance} />}
           {tab === 'staff' && (
             <StaffPanelMobile
-              staff={cityStaff}
+              staff={cityAllStaff}
               attendance={staffAttendance}
               advances={cityStaffAdvances}
               onSaveStaff={saveStaff}
