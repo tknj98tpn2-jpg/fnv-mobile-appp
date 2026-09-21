@@ -9,7 +9,7 @@ import {
   Menu, X, LayoutDashboard, Tag, Scissors, ClipboardList, ShoppingBag,
   PackageCheck, Truck, Truck as TruckIcon, Boxes, Users, Upload, FileSpreadsheet, AlertCircle,
   Trash2, Pencil, Plus, ChevronRight, ArrowLeft, Download, Store,
-  Search, Layers, IndianRupee, TrendingUp,
+  Search, Layers, IndianRupee, UserCheck, Wallet,
 } from 'lucide-react';
 
 // ── Firebase — same project as the web admin panel, so data stays in sync ──
@@ -118,8 +118,8 @@ const SEED_PURCHASES = [];
 const SEED_RECIPES = [];
 
 const SEED_ROLES = [
-  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, purchase: true, stockcount: true, spoilage: true, pricing: true, profitloss: true, packaging: true, dispatch: true, crates: true, users: true } },
-  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, purchase: false, stockcount: true, spoilage: false, pricing: false, profitloss: false, packaging: true, dispatch: true, crates: true, users: false } },
+  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, advanceindent: true, purchase: true, stockcount: true, spoilage: true, pricing: true, sales: true, staff: true, attendance: true, packaging: true, dispatch: true, crates: true, users: true } },
+  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, advanceindent: false, purchase: false, stockcount: true, spoilage: false, pricing: false, sales: false, staff: false, attendance: true, packaging: true, dispatch: true, crates: true, users: false } },
 ];
 
 const SEED_USERS = [];
@@ -134,6 +134,8 @@ const UOM_OPTIONS = ['kg', 'dozen', 'bunch', 'piece', 'pack', 'box', 'crate'];
 
 const NAV = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { key: 'attendance', label: 'Attendance', icon: UserCheck },
+  { key: 'staff', label: 'Staff', icon: UserCheck },
   { key: 'items', label: 'Items', icon: Tag },
   { key: 'vendors', label: 'Vendors', icon: Store },
   { key: 'cutprocess', label: 'Cut & Process', icon: Scissors },
@@ -142,7 +144,7 @@ const NAV = [
   { key: 'stockcount', label: 'Stock Count', icon: Layers },
   { key: 'spoilage', label: 'Spoilage & Surplus', icon: AlertCircle },
   { key: 'pricing', label: 'Pricing', icon: IndianRupee },
-  { key: 'profitloss', label: 'Profit & Loss', icon: TrendingUp },
+  { key: 'sales', label: 'Sales', icon: Wallet },
   { key: 'packaging', label: 'Packaging', icon: PackageCheck },
   { key: 'dispatch', label: 'Dispatch', icon: Truck },
   { key: 'crates', label: 'Crates & boxes', icon: Boxes },
@@ -209,18 +211,28 @@ function sumUnknownNumericColumns(rowObj, headers) {
   return Object.keys(stores).length > 0 ? stores : null;
 }
 
-function parseIndentRows(json) {
-  return json.map((r, idx) => {
-    const headers = Object.keys(r);
-    const rawName = String(pickField(r, ['title', 'article', 'product', 'item', 'description']) || '').trim();
-    const rawCode = String(pickField(r, ['fsn', 'itemcode', 'articlecode', 'productcode', 'sku', 'code']) || '').trim();
-    let qty = Number(pickField(r, ['indent', 'qty', 'quantity', 'orderedqty']) || 0);
-    let storeQtys = null;
-    if (!qty) { const st = sumUnknownNumericColumns(r, headers); if (st) { storeQtys = st; qty = Object.values(st).reduce((s, v) => s + v, 0); } }
-    const unit = String(pickField(r, ['umo', 'uom', 'unit']) || '').trim();
-    const rawCategory = String(pickField(r, ['type', 'category']) || '').trim();
-    return { key: `row-${idx}-${rawName}`, rawName, rawCode, qty, unit, rawCategory, storeQtys };
-  }).filter((r) => r.rawName && r.qty > 0);
+function parseIndentRows(json, platform) {
+  return json
+    .map((r, idx) => {
+      const headers = Object.keys(r);
+      const rawName = String(pickField(r, ['title', 'article', 'product', 'item', 'description']) || '').trim();
+      // Articles are matched on the channel's own SKU/FSN — that is also what the
+      // GRN and PO exports carry, so one code ties the whole chain together.
+      const rawCode = String(pickField(r, ['fsn', 'itemcode', 'articlecode', 'productcode', 'sku', 'code']) || '').trim();
+      // The EAN is kept separately: it is the retail barcode, used only for
+      // printing labels, never for matching.
+      const rawEan = String(pickField(r, ['eancode', 'ean']) || '').trim();
+      let qty = Number(pickField(r, ['indent', 'qty', 'quantity', 'orderedqty']) || 0);
+      let storeQtys = null;
+      if (!qty) {
+        const st = sumUnknownNumericColumns(r, headers);
+        if (st) { storeQtys = st; qty = Object.values(st).reduce((s, v) => s + v, 0); }
+      }
+      const unit = String(pickField(r, ['umo', 'uom', 'unit']) || '').trim();
+      const rawCategory = String(pickField(r, ['type', 'category']) || '').trim();
+      return { key: `row-${idx}-${rawName}`, rawName, rawCode, rawEan, qty, unit, rawCategory, storeQtys };
+    })
+    .filter((r) => r.rawName && r.qty > 0);
 }
 
 // ---------- shared small UI ----------
@@ -326,6 +338,11 @@ export default function FnvMobilePreview() {
   const [spoilageSurplus, setSpoilageSurplus] = useState([]); // auto-computed when a stock count differs from the expected (purchased minus dispatched) remaining stock
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [salesPayments, setSalesPayments] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [staffAdvances, setStaffAdvances] = useState([]);
+  const [staffAttendance, setStaffAttendance] = useState([]);
   const [dbReady, setDbReady] = useState(false);
   const [selectedCity, setSelectedCity] = usePersistedState('fnv_selected_city', CITIES[0]);
   const [currentUser, setCurrentUser] = useState(null);
@@ -349,8 +366,8 @@ export default function FnvMobilePreview() {
       setDbReady(true);
     })();
 
-    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','spoilageSurplus','pricingConfig','grnReports'];
-    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, spoilageSurplus: setSpoilageSurplus, pricingConfig: setPricingConfig, grnReports: setGrnReports };
+    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','spoilageSurplus','pricingConfig','grnReports','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
+    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, spoilageSurplus: setSpoilageSurplus, pricingConfig: setPricingConfig, grnReports: setGrnReports, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
 
     const unsubs = cols.map((col) =>
       onSnapshot(collection(db, col), (snap) => {
@@ -416,7 +433,11 @@ export default function FnvMobilePreview() {
   // values until now. This is the single source of truth for what a logged-in
   // user's drawer and page routing are allowed to show.
   const currentRole = currentUser ? roles.find((r) => r.id === currentUser.roleId) : null;
-  const visibleNav = NAV.filter((n) => hasPermission(currentRole?.permissions, n.key));
+  const visibleNav = NAV.filter((n) => {
+    if (n.key === 'attendance') return hasPermission(currentRole?.permissions, 'attendance') && !hasSensitivePermission(currentRole?.permissions, 'staff');
+    if (n.key === 'staff') return hasSensitivePermission(currentRole?.permissions, 'staff');
+    return hasPermission(currentRole?.permissions, n.key);
+  });
   // If the active tab isn't one this user's role can see — because their role
   // was just restricted, or a stale tab carried over from a previous session —
   // drop them onto the first section they do have access to instead of leaving
@@ -442,7 +463,7 @@ export default function FnvMobilePreview() {
   // alias on a different item (e.g. someone picked the wrong item from a long
   // dropdown once), transfer it here instead of letting two items share the same
   // code, which makes future auto-matching pick whichever item happens to come first.
-  const ensureAliasForCode = (itemId, channel, code) => {
+  const ensureAliasForCode = (itemId, channel, code, ean) => {
     const it = items.find((x) => x.id === itemId); if (!it) return;
     if (!code) {
       const exists = (it.aliases || []).some((a) => a.channel === channel && !a.code);
@@ -451,8 +472,15 @@ export default function FnvMobilePreview() {
       return;
     }
     const codeLower = code.toLowerCase();
-    const alreadyHere = (it.aliases || []).some((a) => a.channel === channel && a.code && a.code.toLowerCase() === codeLower);
-    if (alreadyHere) return;
+    const existing = (it.aliases || []).find((a) => a.channel === channel && a.code && a.code.toLowerCase() === codeLower);
+    if (existing) {
+      // Alias already exists, but may predate the EAN field — backfill it so
+      // barcode printing (from the admin panel) has the retail code to work with.
+      if (ean && !existing.ean) {
+        fbUpdate('items', itemId, { aliases: it.aliases.map((a) => (a.id === existing.id ? { ...a, ean } : a)) });
+      }
+      return;
+    }
     items.forEach((other) => {
       if (other.id === itemId) return;
       const hasIt = (other.aliases || []).some((a) => a.channel === channel && a.code && a.code.toLowerCase() === codeLower);
@@ -460,7 +488,7 @@ export default function FnvMobilePreview() {
         fbUpdate('items', other.id, { aliases: other.aliases.filter((a) => !(a.channel === channel && a.code && a.code.toLowerCase() === codeLower)) });
       }
     });
-    fbUpdate('items', itemId, { aliases: [...(it.aliases || []), { id: newAliasId(), channel, code, packSize: '', packUnit: 'kg' }] });
+    fbUpdate('items', itemId, { aliases: [...(it.aliases || []), { id: newAliasId(), channel, code, ean: ean || '', packSize: '', packUnit: 'kg' }] });
   };
   const updateAliasById = (itemId, aliasId, patch) => {
     const it = items.find((x) => x.id === itemId); if (!it) return;
@@ -601,6 +629,19 @@ export default function FnvMobilePreview() {
     fbUpdate('roles', roleId, { permissions: { ...r.permissions, [key]: val } });
   };
   const addVendor = (v) => fbSetDoc('vendors', v.id, { ...v, city: effectiveCity });
+  // Attendance uses a deterministic id (staff + date) so marking the same day
+  // twice overwrites rather than creating duplicates - same scheme the admin
+  // panel writes, so a day marked from either app shows correctly in both.
+  const saveSalesInvoice = (invoice) => fbSetDoc('salesInvoices', invoice.id, { ...invoice, city: effectiveCity });
+  const deleteSalesInvoice = (id) => fbDelete('salesInvoices', id);
+  const saveSalesPayment = (payment) => fbSetDoc('salesPayments', payment.id, { ...payment, city: effectiveCity });
+  const deleteSalesPayment = (id) => fbDelete('salesPayments', id);
+  const saveStaff = (s) => fbSetDoc('staff', s.id, { ...s, city: effectiveCity });
+  const deleteStaff = (id) => fbDelete('staff', id);
+  const saveAdvance = (adv) => fbSetDoc('staffAdvances', adv.id, { ...adv, city: effectiveCity });
+  const deleteAdvance = (id) => fbDelete('staffAdvances', id);
+  const markAttendance = (staffId, date, status) => fbSetDoc('staffAttendance', `${staffId}__${date}`, { id: `${staffId}__${date}`, staffId, date, status, city: effectiveCity });
+  const clearAttendance = (staffId, date) => fbDelete('staffAttendance', `${staffId}__${date}`);
   const savePlacedOrder = (order) => fbSetDoc('placedOrders', order.id, order);
   const updatePlacedOrder = (id, itemsList) => fbUpdate('placedOrders', id, { items: itemsList });
   const deletePlacedOrder = (id) => fbDelete('placedOrders', id);
@@ -630,7 +671,13 @@ export default function FnvMobilePreview() {
   const currentNav = NAV.find((n) => n.key === tab);
   const cityItems = items.filter((it) => (it.city || CITIES[0]) === effectiveCity);
   const cityVendors = vendors.filter((v) => (v.city || CITIES[0]) === effectiveCity);
+  const citySalesInvoices = salesInvoices.filter((inv) => (inv.city || CITIES[0]) === effectiveCity);
+  const citySalesPayments = salesPayments.filter((p) => (p.city || CITIES[0]) === effectiveCity);
+  const cityStaff = staff.filter((s) => (s.city || CITIES[0]) === effectiveCity && s.status !== 'inactive');
+  const cityAllStaff = staff.filter((s) => (s.city || CITIES[0]) === effectiveCity);
+  const cityStaffAdvances = staffAdvances.filter((a) => (a.city || CITIES[0]) === effectiveCity);
   const cityOrders = orders.filter((o) => (o.city || CITIES[0]) === effectiveCity);
+  const cityOperationalOrders = cityOrders.filter((o) => !o.isAdvance);
   const cityPurchases = purchases.filter((p) => (p.city || CITIES[0]) === effectiveCity);
   const cityIndentBatches = indentBatches.filter((b) => (b.city || CITIES[0]) === effectiveCity);
   const cityStockCounts = stockCounts.filter((sc) => (sc.city || CITIES[0]) === effectiveCity);
@@ -688,9 +735,23 @@ export default function FnvMobilePreview() {
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {tab === 'dashboard' && <DashboardTab orders={cityOrders} purchases={cityPurchases} crates={cityCrates} packingProgress={packingProgress} dispatchLog={cityDispatchLog} />}
+          {tab === 'attendance' && <AttendanceTab staff={cityStaff} attendance={staffAttendance} onMark={markAttendance} onClear={clearAttendance} />}
+          {tab === 'staff' && (
+            <StaffPanelMobile
+              staff={cityStaff}
+              attendance={staffAttendance}
+              advances={cityStaffAdvances}
+              onSaveStaff={saveStaff}
+              onDeleteStaff={deleteStaff}
+              onMarkAttendance={markAttendance}
+              onClearAttendance={clearAttendance}
+              onSaveAdvance={saveAdvance}
+              onDeleteAdvance={deleteAdvance}
+            />
+          )}
           {tab === 'items' && <ItemsTab items={cityItems} onAdd={addItem} onAddBulk={addItemsBulk} onUpdate={updateItem} onDelete={deleteItem} />}
           {tab === 'vendors' && (
-            <VendorsTab items={cityItems} vendors={cityVendors} vendorLedger={cityVendorLedger} placedOrders={placedOrders} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} />
+            <VendorsTab items={cityItems} vendors={cityVendors} vendorLedger={cityVendorLedger} placedOrders={placedOrders} purchases={cityPurchases} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} />
           )}
           {tab === 'cutprocess' && <CutProcessTab items={items} recipes={recipes} orders={orders} onAddRecipe={addRecipe} onDeleteRecipe={deleteRecipe} onAddPurchaseRequirements={addPurchaseRequirements} />}
           {tab === 'orders' && (
@@ -698,16 +759,35 @@ export default function FnvMobilePreview() {
               orders={cityOrders} items={cityItems} indentBatches={cityIndentBatches}
               onImport={importOrder} onAddItem={addItem} onEnsureAlias={ensureAliasForCode} onUpdateAlias={updateAliasById}
               onCreateIndentBatch={createIndentBatch} onToggleReleaseBatch={toggleReleaseBatch}
+              canAdvanceIndent={hasSensitivePermission(currentRole?.permissions, 'advanceindent')}
             />
           )}
           {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} />}
           {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} />}
           {tab === 'spoilage' && <SpoilageSurplusTab spoilageSurplus={citySpoilageSurplus} />}
           {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
-          {tab === 'profitloss' && <ProfitLossTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} dispatchLog={cityDispatchLog} grnReports={cityGrnReports} indentBatches={cityIndentBatches} city={effectiveCity} onUploadGrn={uploadGrnReport} onUpdateIndentBatch={updateIndentBatch} />}
-          {tab === 'packaging' && <PackagingTab orders={cityOrders} items={cityItems} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} />}
+          {tab === 'sales' && (
+            <SalesTabMobile
+              items={cityItems}
+              orders={cityOrders}
+              purchases={cityPurchases}
+              pricingConfig={pricingConfig}
+              grnReports={cityGrnReports}
+              indentBatches={cityIndentBatches}
+              salesInvoices={citySalesInvoices}
+              salesPayments={citySalesPayments}
+              city={effectiveCity}
+              onUploadGrn={uploadGrnReport}
+              onUpdateIndentBatch={updateIndentBatch}
+              onSaveInvoice={saveSalesInvoice}
+              onDeleteInvoice={deleteSalesInvoice}
+              onSavePayment={saveSalesPayment}
+              onDeletePayment={deleteSalesPayment}
+            />
+          )}
+          {tab === 'packaging' && <PackagingTab orders={cityOperationalOrders} items={cityItems} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} />}
           {tab === 'dispatch' && (
-            <DispatchTab orders={cityOrders} crates={cityCrates} dispatchLog={cityDispatchLog} indentBatches={cityIndentBatches} onDispatchBatch={dispatchBatch} />
+            <DispatchTab orders={cityOperationalOrders} crates={cityCrates} dispatchLog={cityDispatchLog} indentBatches={cityIndentBatches} onDispatchBatch={dispatchBatch} />
           )}
           {tab === 'crates' && <CratesTab crates={cityCrates} log={cityCrateLog} onAdjust={adjustCrates} />}
           {tab === 'users' && (
@@ -877,6 +957,401 @@ function ChannelProgressRings({ channel, dispatchPercent, packagePercent, orderC
   );
 }
 
+// ── Attendance (the only Staff feature exposed on mobile — a supervisor marks
+// who worked today; salary, advances and payroll stay admin-only) ──
+const ATTENDANCE_STATUSES = [
+  { key: 'present', label: 'P', full: 'Present', color: LEAF, payFactor: 1 },
+  { key: 'halfday', label: 'H', full: 'Half day', color: AMBER, payFactor: 0.5 },
+  { key: 'leave', label: 'L', full: 'Paid leave', color: '#5B8DB8', payFactor: 1 },
+  { key: 'absent', label: 'A', full: 'Absent', color: TOMATO, payFactor: 0 },
+];
+const attendanceMeta = (key) => ATTENDANCE_STATUSES.find((s) => s.key === key);
+function daysInMonth(monthStr) {
+  const [y, m] = monthStr.split('-').map(Number);
+  return new Date(y, m, 0).getDate();
+}
+function monthDateStrings(monthStr) {
+  return Array.from({ length: daysInMonth(monthStr) }, (_, i) => `${monthStr}-${String(i + 1).padStart(2, '0')}`);
+}
+function tenureText(joiningDate) {
+  if (!joiningDate) return '—';
+  const start = new Date(`${joiningDate}T00:00:00`);
+  const now = new Date();
+  let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  if (now.getDate() < start.getDate()) months -= 1;
+  if (months < 0) return 'Starts soon';
+  const y = Math.floor(months / 12);
+  const m = months % 12;
+  if (y === 0) return `${m} month${m === 1 ? '' : 's'}`;
+  return m === 0 ? `${y} year${y === 1 ? '' : 's'}` : `${y}y ${m}m`;
+}
+// Payroll for one person in one month. Unmarked days are treated as worked —
+// marking every present day would be a lot of clicking, so only exceptions
+// (absent/half-day/leave) need recording, which is how most small teams run it.
+function computePayroll(person, monthStr, attendance, advances) {
+  const dates = monthDateStrings(monthStr);
+  const totalDays = dates.length;
+  const perDay = (Number(person.monthlySalary) || 0) / totalDays;
+  const marks = {};
+  attendance.filter((a) => a.staffId === person.id && (a.date || '').startsWith(monthStr)).forEach((a) => { marks[a.date] = a.status; });
+  const joined = person.joiningDate || '';
+  const eligible = dates.filter((d) => !joined || d >= joined);
+  const counts = { present: 0, halfday: 0, leave: 0, absent: 0, unmarked: 0 };
+  let payableDays = 0;
+  eligible.forEach((d) => {
+    const status = marks[d];
+    if (!status) { counts.unmarked += 1; payableDays += 1; return; }
+    counts[status] = (counts[status] || 0) + 1;
+    payableDays += attendanceMeta(status)?.payFactor ?? 1;
+  });
+  const earned = Math.round(perDay * payableDays * 100) / 100;
+  const monthAdvances = advances.filter((a) => a.staffId === person.id && (a.date || '').startsWith(monthStr));
+  const advanceTotal = Math.round(monthAdvances.reduce((s, a) => s + (Number(a.amount) || 0), 0) * 100) / 100;
+  return {
+    totalDays, eligibleDays: eligible.length, counts, payableDays: Math.round(payableDays * 100) / 100,
+    earned, advanceTotal, netPayable: Math.round((earned - advanceTotal) * 100) / 100,
+  };
+}
+
+function AttendanceTab({ staff, attendance, onMark, onClear }) {
+  const today = new Date().toISOString().split('T')[0];
+  const [date, setDate] = useState(today);
+  const isLocked = date !== today;
+
+  const markMap = useMemo(() => {
+    const m = {};
+    attendance.filter((a) => a.date === date).forEach((a) => { m[a.staffId] = a.status; });
+    return m;
+  }, [attendance, date]);
+
+  // Tapping a person's status walks Present → Half day → Paid leave → Absent →
+  // blank, so the whole thing works with one thumb and no dropdowns.
+  const cycle = (staffId) => {
+    if (isLocked) return;
+    const current = markMap[staffId];
+    if (!current) { onMark(staffId, date, 'present'); return; }
+    const idx = ATTENDANCE_STATUSES.findIndex((s) => s.key === current);
+    if (idx === ATTENDANCE_STATUSES.length - 1) { onClear(staffId, date); return; }
+    onMark(staffId, date, ATTENDANCE_STATUSES[idx + 1].key);
+  };
+
+  const markedCount = staff.filter((p) => markMap[p.id]).length;
+
+  return (
+    <div style={{ padding: 16 }}>
+      <Card style={{ marginBottom: 10 }}>
+        <p style={sectionTitle}>Attendance</p>
+        <p style={hint}>Tap a person to mark them. Tap again to cycle Present → Half day → Paid leave → Absent → blank (blank counts as not yet marked).</p>
+        <p style={smallLabel}>DATE</p>
+        <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} max={today} />
+        <p style={{ margin: 0, fontSize: 12, color: MUTED }}>{markedCount} / {staff.length} marked</p>
+      </Card>
+
+      {isLocked && (
+        <div style={{ background: '#FFF4E5', border: `1px solid ${AMBER}`, borderRadius: RADIUS.lg, padding: '10px 12px', marginBottom: 14, fontSize: 12, color: INK }}>
+          This day is locked — only today's attendance can be marked here. To correct a past day, use the admin panel.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+        {ATTENDANCE_STATUSES.map((s) => (
+          <span key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: MUTED }}>
+            <span style={{ width: 16, height: 16, borderRadius: 4, background: s.color, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{s.label}</span>
+            {s.full}
+          </span>
+        ))}
+      </div>
+
+      {staff.length === 0 ? (
+        <Card><p style={{ margin: 0, fontSize: 13, color: MUTED }}>No staff added yet — ask an admin to add staff in the admin panel first.</p></Card>
+      ) : (
+        staff.map((p) => {
+          const beforeJoining = p.joiningDate && date < p.joiningDate;
+          const disabled = beforeJoining || isLocked;
+          const status = markMap[p.id];
+          const meta = status ? attendanceMeta(status) : null;
+          return (
+            <Card key={p.id} style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: disabled ? 0.5 : 1 }}>
+              <div>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: INK }}>{p.name}</p>
+                {p.role && <p style={{ margin: '2px 0 0', fontSize: 11, color: MUTED }}>{p.role}</p>}
+                {beforeJoining && <p style={{ margin: '2px 0 0', fontSize: 10, color: MUTED }}>Joins {p.joiningDate}</p>}
+              </div>
+              <button
+                onClick={() => cycle(p.id)}
+                disabled={disabled}
+                style={{
+                  minWidth: 84, padding: '10px 14px', borderRadius: RADIUS.lg, border: meta ? 'none' : `1px solid ${LINE}`,
+                  background: meta ? meta.color : '#fff', color: meta ? '#fff' : MUTED, fontWeight: 800, fontSize: 13,
+                  cursor: disabled ? 'default' : 'pointer',
+                }}
+              >
+                {meta ? meta.full : 'Not marked'}
+              </button>
+            </Card>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+// ── Staff (mobile, full — Admin role only) — People, Attendance, Advances,
+// Payroll, using the exact same verified helpers as the admin panel ──
+function StaffPanelMobile({ staff, attendance, advances, onSaveStaff, onDeleteStaff, onMarkAttendance, onClearAttendance, onSaveAdvance, onDeleteAdvance }) {
+  const [view, setView] = useState('people');
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ marginBottom: 12 }}>
+        <Chip label="People" active={view === 'people'} onClick={() => setView('people')} />
+        <Chip label="Attendance" active={view === 'attendance'} onClick={() => setView('attendance')} />
+        <Chip label="Advances" active={view === 'advances'} onClick={() => setView('advances')} />
+        <Chip label="Payroll" active={view === 'payroll'} onClick={() => setView('payroll')} />
+      </div>
+      {view !== 'people' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: MUTED }}>MONTH</span>
+          <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={{ padding: '7px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12 }} />
+        </div>
+      )}
+      {view === 'people' && <StaffPeopleMobile staff={staff} onSaveStaff={onSaveStaff} onDeleteStaff={onDeleteStaff} />}
+      {view === 'attendance' && <StaffAttendanceMobile staff={staff} attendance={attendance} month={month} onMark={onMarkAttendance} onClear={onClearAttendance} />}
+      {view === 'advances' && <StaffAdvancesMobile staff={staff} advances={advances} month={month} onSave={onSaveAdvance} onDelete={onDeleteAdvance} />}
+      {view === 'payroll' && <StaffPayrollMobile staff={staff} attendance={attendance} advances={advances} month={month} />}
+    </div>
+  );
+}
+
+function StaffPeopleMobile({ staff, onSaveStaff, onDeleteStaff }) {
+  const blank = { id: '', name: '', phone: '', role: '', joiningDate: new Date().toISOString().split('T')[0], monthlySalary: '', status: 'active' };
+  const [editing, setEditing] = useState(null);
+
+  const save = () => {
+    if (!editing.name.trim()) return;
+    onSaveStaff({ ...editing, id: editing.id || `STF-${Date.now().toString(36).toUpperCase()}`, name: editing.name.trim(), monthlySalary: Number(editing.monthlySalary) || 0 });
+    setEditing(null);
+  };
+
+  if (editing) {
+    return (
+      <Card>
+        <p style={sectionTitle}>{editing.id ? 'Edit staff member' : 'Add staff member'}</p>
+        <p style={smallLabel}>NAME</p>
+        <Field value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+        <p style={smallLabel}>ROLE / DESIGNATION</p>
+        <Field value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })} placeholder="e.g. Packer, Driver" />
+        <p style={smallLabel}>PHONE</p>
+        <Field value={editing.phone} onChange={(e) => setEditing({ ...editing, phone: e.target.value })} />
+        <p style={smallLabel}>JOINING DATE</p>
+        <Field type="date" value={editing.joiningDate} onChange={(e) => setEditing({ ...editing, joiningDate: e.target.value })} />
+        <p style={smallLabel}>MONTHLY SALARY (₹)</p>
+        <Field type="number" value={editing.monthlySalary} onChange={(e) => setEditing({ ...editing, monthlySalary: e.target.value })} />
+        <p style={smallLabel}>STATUS</p>
+        <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 10 }}>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive (left)</option>
+        </select>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <PrimaryBtn onClick={save}>Save</PrimaryBtn>
+          <button onClick={() => setEditing(null)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: RADIUS.md, padding: '10px 16px', fontWeight: 700, fontSize: 12 }}>Cancel</button>
+        </div>
+      </Card>
+    );
+  }
+
+  const active = staff.filter((s) => s.status !== 'inactive');
+  const inactive = staff.filter((s) => s.status === 'inactive');
+  const monthlyWageBill = active.reduce((s, p) => s + (Number(p.monthlySalary) || 0), 0);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>ACTIVE STAFF</div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{active.length}</div>
+        </Card>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>WAGE BILL</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: LEAF }}>{money(monthlyWageBill)}</div>
+        </Card>
+      </div>
+      <button onClick={() => setEditing(blank)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.md, padding: '9px 14px', fontWeight: 700, fontSize: 12, marginBottom: 12 }}>
+        <Plus size={13} /> Add staff
+      </button>
+      {[...active, ...inactive].map((p) => (
+        <Card key={p.id} style={{ marginBottom: 8, opacity: p.status === 'inactive' ? 0.55 : 1 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{p.name}{p.status === 'inactive' && <span style={{ fontSize: 10, color: MUTED, fontWeight: 400 }}> (left)</span>}</div>
+              <div style={{ fontSize: 11, color: MUTED }}>{p.role || '—'} · {tenureText(p.joiningDate)}</div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{money(p.monthlySalary)}/mo</div>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={() => setEditing({ ...blank, ...p })} style={{ background: 'none', border: 'none', color: LEAF }}><Pencil size={15} /></button>
+              <button onClick={() => { if (window.confirm(`Delete ${p.name}?`)) onDeleteStaff(p.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={15} /></button>
+            </div>
+          </div>
+        </Card>
+      ))}
+      {staff.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No staff added yet.</div></Card>}
+    </div>
+  );
+}
+
+function StaffAttendanceMobile({ staff, attendance, month, onMark, onClear }) {
+  const dates = monthDateStrings(month);
+  const active = staff.filter((s) => s.status !== 'inactive');
+  const markMap = useMemo(() => {
+    const m = {};
+    attendance.forEach((a) => { m[`${a.staffId}__${a.date}`] = a.status; });
+    return m;
+  }, [attendance]);
+  const [openStaffId, setOpenStaffId] = useState(active[0]?.id || null);
+
+  const cycle = (staffId, date) => {
+    const current = markMap[`${staffId}__${date}`];
+    if (!current) { onMark(staffId, date, 'present'); return; }
+    const idx = ATTENDANCE_STATUSES.findIndex((s) => s.key === current);
+    if (idx === ATTENDANCE_STATUSES.length - 1) { onClear(staffId, date); return; }
+    onMark(staffId, date, ATTENDANCE_STATUSES[idx + 1].key);
+  };
+
+  if (active.length === 0) return <Card><div style={{ fontSize: 12, color: MUTED }}>No active staff yet.</div></Card>;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 10 }}>
+        {active.map((p) => <Chip key={p.id} label={p.name} active={openStaffId === p.id} onClick={() => setOpenStaffId(p.id)} />)}
+      </div>
+      {openStaffId && (
+        <Card>
+          <div style={hint}>Tap a day to cycle Present → Half day → Paid leave → Absent → blank.</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {dates.map((d) => {
+              const person = active.find((p) => p.id === openStaffId);
+              const beforeJoining = person?.joiningDate && d < person.joiningDate;
+              const status = markMap[`${openStaffId}__${d}`];
+              const meta = status ? attendanceMeta(status) : null;
+              return (
+                <button
+                  key={d}
+                  onClick={() => !beforeJoining && cycle(openStaffId, d)}
+                  disabled={beforeJoining}
+                  title={d}
+                  style={{ width: 34, height: 34, borderRadius: 6, border: meta ? 'none' : `1px solid ${LINE}`, background: beforeJoining ? '#F0F0EC' : (meta ? meta.color : '#fff'), color: meta ? '#fff' : MUTED, fontSize: 10, fontWeight: 800 }}
+                >
+                  {Number(d.slice(-2))}
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function StaffAdvancesMobile({ staff, advances, month, onSave, onDelete }) {
+  const [adding, setAdding] = useState(false);
+  const [staffId, setStaffId] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+
+  const monthAdvances = advances.filter((a) => (a.date || '').startsWith(month)).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const total = monthAdvances.reduce((s, a) => s + (Number(a.amount) || 0), 0);
+  const nameOf = (id) => staff.find((s) => s.id === id)?.name || 'Unknown';
+
+  const save = () => {
+    if (!staffId || !amount) return;
+    onSave({ id: `ADV-${Date.now().toString(36).toUpperCase()}`, staffId, date, amount: Number(amount), note: note.trim() });
+    setAdding(false); setStaffId(''); setAmount(''); setNote('');
+  };
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 12, padding: 10 }}>
+        <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>ADVANCES THIS MONTH</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: AMBER }}>{money(total)}</div>
+      </Card>
+      {!adding ? (
+        <button onClick={() => setAdding(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.md, padding: '9px 14px', fontWeight: 700, fontSize: 12, marginBottom: 12 }}>
+          <Plus size={13} /> Give advance
+        </button>
+      ) : (
+        <Card style={{ marginBottom: 12 }}>
+          <p style={sectionTitle}>Record an advance</p>
+          <p style={smallLabel}>STAFF MEMBER</p>
+          <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 8 }}>
+            <option value="">— Select —</option>
+            {staff.filter((s) => s.status !== 'inactive').map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <p style={smallLabel}>DATE</p>
+          <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <p style={smallLabel}>AMOUNT (₹)</p>
+          <Field type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <p style={smallLabel}>NOTE (optional)</p>
+          <Field value={note} onChange={(e) => setNote(e.target.value)} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={save}>Save</PrimaryBtn>
+            <button onClick={() => setAdding(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: RADIUS.md, padding: '10px 16px', fontWeight: 700, fontSize: 12 }}>Cancel</button>
+          </div>
+        </Card>
+      )}
+      {monthAdvances.map((a) => (
+        <Card key={a.id} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{nameOf(a.staffId)}</div>
+              <div style={{ fontSize: 11, color: MUTED }}>{a.date}{a.note ? ` · ${a.note}` : ''}</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontWeight: 700, color: AMBER }}>{money(a.amount)}</span>
+              <button onClick={() => { if (window.confirm('Delete this advance?')) onDelete(a.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={14} /></button>
+            </div>
+          </div>
+        </Card>
+      ))}
+      {monthAdvances.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No advances given in {month}.</div></Card>}
+    </div>
+  );
+}
+
+function StaffPayrollMobile({ staff, attendance, advances, month }) {
+  const active = staff.filter((s) => s.status !== 'inactive');
+  const rows = active.map((p) => ({ person: p, ...computePayroll(p, month, attendance, advances) }));
+  const totalNet = rows.reduce((s, r) => s + r.netPayable, 0);
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 12, padding: 10 }}>
+        <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>NET PAYABLE ({month})</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: LEAF }}>{money(totalNet)}</div>
+      </Card>
+      {rows.map((r) => (
+        <Card key={r.person.id} style={{ marginBottom: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{r.person.name}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED, marginBottom: 2 }}>
+            <span>Salary {money(r.person.monthlySalary)}</span>
+            <span>{r.payableDays}/{r.eligibleDays} days</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED, marginBottom: 4 }}>
+            {r.counts.absent > 0 && <span style={{ color: TOMATO }}>Absent {r.counts.absent}</span>}
+            {r.counts.halfday > 0 && <span style={{ color: AMBER }}>Half {r.counts.halfday}</span>}
+            {r.advanceTotal > 0 && <span>Advance −{money(r.advanceTotal)}</span>}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>Net payable</span>
+            <span style={{ fontSize: 14, fontWeight: 800, color: r.netPayable < 0 ? TOMATO : LEAF }}>{money(r.netPayable)}</span>
+          </div>
+        </Card>
+      ))}
+      {rows.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No active staff to pay.</div></Card>}
+    </div>
+  );
+}
+
 function DashboardTab({ orders, purchases, crates, packingProgress, dispatchLog }) {
   const today = new Date().toISOString().split('T')[0];
   const todayTrips = dispatchLog.filter((d) => d.date === today).length;
@@ -985,6 +1460,62 @@ function parseBulkItemRows(json) {
   return results;
 }
 
+// The Ledger above only carries CREDIT purchases (those are what create a due).
+// Cash/UPI/bank purchases settle instantly and never land there, so this reads
+// the purchases collection directly instead, which holds every purchase from
+// this vendor whatever the payment mode.
+function VendorPurchaseHistoryMobile({ vendorName, purchases }) {
+  const [openDate, setOpenDate] = useState(null);
+  const byDate = useMemo(() => {
+    const groups = {};
+    purchases
+      .filter((p) => (p.supplier || '').trim().toLowerCase() === (vendorName || '').trim().toLowerCase())
+      .forEach((p) => {
+        const d = p.date || '—';
+        if (!groups[d]) groups[d] = { date: d, rows: [], total: 0 };
+        groups[d].rows.push(p);
+        groups[d].total += Number(p.cost) || 0;
+      });
+    return Object.values(groups).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  }, [purchases, vendorName]);
+
+  return (
+    <Card style={{ marginBottom: 12 }}>
+      <div style={sectionTitle}>Purchase history — date wise</div>
+      <div style={hint}>Every purchase from this vendor, in any payment mode. Tap a date for that day's items.</div>
+      {byDate.length === 0 && <div style={{ fontSize: 12, color: MUTED }}>No purchases recorded from this vendor yet.</div>}
+      {byDate.map((g) => {
+        const isOpen = openDate === g.date;
+        return (
+          <div key={g.date} style={{ border: `1px solid ${LINE}`, borderRadius: 8, marginBottom: 6, overflow: 'hidden' }}>
+            <button
+              onClick={() => setOpenDate(isOpen ? null : g.date)}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: isOpen ? '#F4F6F1' : '#fff', border: 'none', padding: '8px 10px' }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ChevronRight size={12} style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s', color: MUTED }} />
+                <span style={{ fontWeight: 700, fontSize: 12 }}>{g.date}</span>
+                <span style={{ fontSize: 10, color: MUTED }}>{g.rows.length} item{g.rows.length === 1 ? '' : 's'}</span>
+              </span>
+              <span style={{ fontWeight: 800, fontSize: 12, color: LEAF }}>{money(g.total)}</span>
+            </button>
+            {isOpen && (
+              <div style={{ borderTop: `1px solid ${LINE}`, padding: '6px 10px' }}>
+                {g.rows.map((r) => (
+                  <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 11 }}>
+                    <span>{r.item} · {r.qty} {r.unit}</span>
+                    <span style={{ fontWeight: 700 }}>{money(r.cost)} <span style={{ color: MUTED, fontWeight: 400 }}>({r.source || '—'})</span></span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
 function VendorItemLinkerMobile({ vendorId, vendorItemIds, items, onToggle }) {
   const [search, setSearch] = useState('');
   const linkedItems = items.filter((it) => vendorItemIds.includes(it.id));
@@ -1039,6 +1570,14 @@ const COMPANY_NAME = 'NILGIRI FNV SUPPLIER COMPANY';
 // existing roles never lose access to something they were silently already using.
 function hasPermission(permissions, key) {
   return !permissions || permissions[key] !== false;
+}
+// Sensitive, admin-only features (staff pay/payroll, committing to advance
+// purchases) must be explicitly granted — the opposite default from every
+// other permission. Otherwise a role saved before this permission existed
+// would fail OPEN (missing key = allowed) and suddenly gain access the
+// moment this ships, instead of needing an admin to turn it on.
+function hasSensitivePermission(permissions, key) {
+  return !!permissions && permissions[key] === true;
 }
 
 function generateOrderImage(order) {
@@ -1189,7 +1728,7 @@ function formatLedgerDate(d, short) {
 const isDueEntry = (e) => e.payment === 'credit' && !e.settled;
 const money = (n) => `₹${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-IN')}`;
 
-function VendorsTab({ items, vendors, vendorLedger, placedOrders, onAdd, onDelete, onToggleItem, onSettle, onUpdatePlacedOrder, onDeletePlacedOrder }) {
+function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onAdd, onDelete, onToggleItem, onSettle, onUpdatePlacedOrder, onDeletePlacedOrder }) {
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [vendorSearch, setVendorSearch] = useState('');
@@ -1475,6 +2014,8 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, onAdd, onDelet
             </div>
           )}
         </Card>
+
+        <VendorPurchaseHistoryMobile vendorName={openVendor.name} purchases={purchases} />
 
         <div style={{ textAlign: 'center', marginBottom: 12 }}>
           {confirmDeleteId === openVendor.id ? (
@@ -1934,7 +2475,7 @@ function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch }) {
   );
 }
 
-function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch }) {
+function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch, canAdvanceIndent }) {
   const [platform, setPlatform] = useState('Blinkit');
   const [product, setProduct] = useState('');
   const [qty, setQty] = useState('');
@@ -1942,7 +2483,8 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   const [fulfilmentDate, setFulfilmentDate] = useState('');
   const [indentPlatform, setIndentPlatform] = useState('Blinkit');
   const [indentFulfilmentDate, setIndentFulfilmentDate] = useState('');
-  const [pendingIndent, setPendingIndent] = useState(null);
+  const [pendingIndent, setPendingIndent] = useState(null); // { platform, fileName, rows, fulfilmentDate, isAdvance }
+  const advanceFileRef = useRef(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState(new Set());
   const [fileError, setFileError] = useState('');
   const fileInputRef = useRef(null);
@@ -1953,10 +2495,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     setProduct(''); setQty(''); setFulfilmentDate('');
   };
 
-  const handleFile = (e) => {
+  const handleFile = (e, isAdvance = false) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (!indentFulfilmentDate) {
+    // An advance indent is a heads-up for buying only — the channel fixes its own
+    // fulfilment date later, so we deliberately don't ask for one here.
+    if (!isAdvance && !indentFulfilmentDate) {
       setFileError('Please set the fulfilment date before uploading an indent.');
       e.target.value = '';
       return;
@@ -1968,16 +2512,16 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
         const wb = XLSX.read(evt.target.result, { type: 'array' });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        const rawRows = parseIndentRows(json);
+        const rawRows = parseIndentRows(json, indentPlatform);
         if (rawRows.length === 0) { setFileError('No article rows with a valid name and quantity were found.'); return; }
         const rows = rawRows.map((r) => {
           const match = items.find((it) => (r.rawCode && (it.aliases || []).some((a) => a.channel === indentPlatform && a.code && a.code.toLowerCase() === r.rawCode.toLowerCase())) || it.name.toLowerCase() === r.rawName.toLowerCase());
           // Each distinct article code gets its own alias — even when it shares a base
           // item with another article on the same channel (e.g. two different pack sizes).
-          if (match) onEnsureAlias(match.id, indentPlatform, r.rawCode);
+          if (match) onEnsureAlias(match.id, indentPlatform, r.rawCode, r.rawEan);
           return { ...r, mappedItemId: match ? match.id : '' };
         });
-        setPendingIndent({ platform: indentPlatform, fileName: file.name, rows, fulfilmentDate: indentFulfilmentDate });
+        setPendingIndent({ platform: indentPlatform, fileName: file.name, rows, fulfilmentDate: isAdvance ? '' : indentFulfilmentDate, isAdvance });
         setSelectedRowKeys(new Set(rows.map((r) => r.key))); // select all by default
       } catch (err) {
         setFileError('Could not read this file. Please upload a valid .xlsx, .xls, or .csv indent.');
@@ -2067,14 +2611,15 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           packQty: storePacks,
           packSize,
           packUnit,
+          isAdvance: !!pendingIndent.isAdvance,
           batchId,
         });
         compiledMap[key].qty += storeQty;
       });
     });
     const compiled = Object.values(compiledMap);
-    if (compiled.length > 0) onCreateIndentBatch({ id: batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [] });
-    if (!remaining.length) setIndentFulfilmentDate('');
+    if (compiled.length > 0) onCreateIndentBatch({ id: batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [], isAdvance: !!pendingIndent.isAdvance });
+    if (!remaining.length && !pendingIndent.isAdvance) setIndentFulfilmentDate('');
     setPendingIndent(remaining.length ? { ...pendingIndent, rows: remaining } : null);
     setSelectedRowKeys(new Set(remaining.filter((r) => selectedRowKeys.has(r.key)).map((r) => r.key)));
   };
@@ -2095,8 +2640,20 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
         <div style={smallLabel}>Fulfilment date (required)</div>
         <Field type="date" value={indentFulfilmentDate} onChange={(e) => setIndentFulfilmentDate(e.target.value)} />
         <PrimaryBtn onClick={() => fileInputRef.current?.click()} disabled={!indentFulfilmentDate}>Upload {indentPlatform} indent</PrimaryBtn>
-        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={(e) => handleFile(e, false)} style={{ display: 'none' }} />
         {!indentFulfilmentDate && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: AMBER, marginTop: 8 }}><AlertCircle size={12} /> Fulfilment date is required before you can upload.</div>}
+        {canAdvanceIndent && (
+          <>
+            <button
+              onClick={() => advanceFileRef.current?.click()}
+              style={{ width: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.lg, padding: '10px 0', fontWeight: 700, fontSize: 12, marginTop: 8 }}
+            >
+              <Upload size={13} /> Upload advance indent
+            </button>
+            <input ref={advanceFileRef} type="file" accept=".xlsx,.xls,.csv" onChange={(e) => handleFile(e, true)} style={{ display: 'none' }} />
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>For articles that take a few days to arrive — no fulfilment date needed, and never counted in Sales or accounting.</div>
+          </>
+        )}
         {fileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: TOMATO, marginTop: 8 }}><AlertCircle size={13} /> {fileError}</div>}
 
         {pendingIndent && (
@@ -2162,6 +2719,23 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
 
 function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders: groupOrders, defaultOpen }) {
   const [open, setOpen] = useState(!!defaultOpen);
+  const [openArticleKey, setOpenArticleKey] = useState(null);
+
+  // A channel indent lists one quantity per dark store, so the same article
+  // legitimately becomes several orders. Grouping by article here keeps the
+  // list short; the per-store orders sit inside, one tap away.
+  const articleGroups = useMemo(() => {
+    const map = {};
+    groupOrders.forEach((o) => {
+      const name = o.articleName || o.product;
+      const key = `${name}__${o.unit}`;
+      if (!map[key]) map[key] = { key, name, unit: o.unit, rows: [], qty: 0 };
+      map[key].rows.push(o);
+      map[key].qty = Math.round((map[key].qty + (Number(o.qty) || 0)) * 100) / 100;
+    });
+    return Object.values(map).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }, [groupOrders]);
+
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, marginBottom: 10, overflow: 'hidden' }}>
       <div onClick={() => setOpen((x) => !x)} style={{ padding: '10px 12px', cursor: 'pointer', background: open ? '#F6F3EA' : '#fff' }}>
@@ -2174,18 +2748,39 @@ function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders:
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
           {badgeText && <span style={{ background: badgeColor === 'blue' ? '#E6F1FB' : '#FBEFDC', color: badgeColor === 'blue' ? '#1B5E8C' : AMBER, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999 }}>{badgeText}</span>}
-          <span style={{ background: '#EAF3DE', color: LEAF_DARK, fontWeight: 800, fontSize: 10, padding: '2px 8px', borderRadius: 999 }}>{groupOrders.length} order{groupOrders.length !== 1 ? 's' : ''}</span>
+          <span style={{ background: '#EAF3DE', color: LEAF_DARK, fontWeight: 800, fontSize: 10, padding: '2px 8px', borderRadius: 999 }}>{articleGroups.length} article{articleGroups.length !== 1 ? 's' : ''}</span>
         </div>
       </div>
-      {open && groupOrders.map((o) => (
-        <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${LINE}`, padding: '8px 12px' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{o.id} · {o.platform}{orderStore(o) ? ` · ${storeLabel(orderStore(o))}` : ''}</div>
-            <div style={{ fontSize: 12, color: MUTED }}>{o.articleName || o.product} · {o.qty} {o.unit}{o.fulfilmentDate ? ` · due ${o.fulfilmentDate}` : ''}</div>
+      {open && articleGroups.map((g) => {
+        const isOpen = openArticleKey === g.key;
+        const statuses = Array.from(new Set(g.rows.map((r) => r.status)));
+        return (
+          <div key={g.key} style={{ borderTop: `1px solid ${LINE}` }}>
+            <div
+              onClick={() => g.rows.length > 1 && setOpenArticleKey(isOpen ? null : g.key)}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', cursor: g.rows.length > 1 ? 'pointer' : 'default', background: isOpen ? '#FAFAF7' : 'transparent' }}
+            >
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                {g.rows.length > 1 && <ChevronRight size={11} color={MUTED} style={{ transform: isOpen ? 'rotate(90deg)' : 'none', flexShrink: 0 }} />}
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{g.name}</div>
+                  <div style={{ fontSize: 11, color: MUTED }}>{g.qty} {g.unit}{g.rows.length > 1 ? ` · ${g.rows.length} stores` : (orderStore(g.rows[0]) ? ` · ${storeLabel(orderStore(g.rows[0]))}` : '')}</div>
+                </div>
+              </div>
+              {statuses.length === 1 ? <StatusPill status={statuses[0]} /> : <span style={{ fontSize: 10, color: MUTED }}>Mixed</span>}
+            </div>
+            {isOpen && g.rows.map((o) => (
+              <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 12px 6px 30px', background: '#FAFAF7', borderTop: `1px solid ${LINE}` }}>
+                <div>
+                  <div style={{ fontSize: 11, color: MUTED }}>{o.id}{orderStore(o) ? ` · ${storeLabel(orderStore(o))}` : ''}</div>
+                  <div style={{ fontSize: 11 }}>{o.qty} {o.unit}</div>
+                </div>
+                <StatusPill status={o.status} />
+              </div>
+            ))}
           </div>
-          <StatusPill status={o.status} />
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -2265,10 +2860,12 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
 
   const [showAllVendorItems, setShowAllVendorItems] = useState(false);
+  const [showAllVendorsInDropdown, setShowAllVendorsInDropdown] = useState(false);
   const openItem = (id, keepVendor = false) => {
     setSelectedItemId(id);
     if (!keepVendor) setSelectedVendorId('');
     setShowAllVendorItems(false);
+    setShowAllVendorsInDropdown(false);
     setPurchaseQty('');
     setUnitPrice('');
     setTotalInput('');
@@ -2457,6 +3054,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     const unit = neededByProduct[it?.name]?.unit || it?.uom;
     const stock = stockByItem[it?.name] || 0;
     const toBuy = Math.max(0, Math.round((needed - stock) * 100) / 100);
+    const mappedVendors = vendors.filter((v) => (v.itemIds || []).includes(it?.id));
+    const dropdownVendors = mappedVendors.length === 0 || showAllVendorsInDropdown ? vendors : mappedVendors;
     return (
       <div style={{ padding: 16 }}>
         <button onClick={() => setSelectedItemId(null)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 13, cursor: 'pointer', marginBottom: 12, padding: 0 }}>
@@ -2490,10 +3089,17 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
               style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, color: INK, background: '#fff' }}
             >
               <option value="">Choose a vendor</option>
-              {vendors.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}{v.itemIds.includes(it?.id) ? ' (supplies this item)' : ''}</option>
+              {dropdownVendors.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
               ))}
             </select>
+            {mappedVendors.length === 0 ? (
+              <div style={{ fontSize: 11, color: AMBER, marginTop: 4 }}>No vendor is linked to {it?.name} yet — showing every vendor. Link one in Vendors to shorten this list next time.</div>
+            ) : !showAllVendorsInDropdown && (
+              <button onClick={() => setShowAllVendorsInDropdown(true)} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: 0, marginTop: 4 }}>
+                Not listed? Show all vendors
+              </button>
+            )}
           </div>
 
           {selectedVendorId ? (
@@ -3052,76 +3658,7 @@ function buildLatestUnitPriceByItem(purchases) {
   return map;
 }
 
-// One entry per distinct article that has come through an indent — same product can have
-// several pack sizes, each priced separately. Shared by Pricing and Profit & Loss tabs.
-// The key is prefixed with city so that two cities selling the same product/platform/pack
-// combo never share the same pricing config (grading %, margins, etc. stay per-city).
-function buildPricingArticles(orders, items, purchases, city) {
-  const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
-  const map = {};
-  orders
-    .filter((o) => o.packSize && o.packUnit)
-    .forEach((o) => {
-      const key = `${city}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
-      // Pre-fix pricingConfig docs were saved without a city prefix at all, shared across
-      // every city. Keeping this around lets a city inherit those old settings the first
-      // time it prices this article, instead of silently resetting everyone to zero.
-      const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
-      if (map[key]) return;
-      const item = items.find((it) => it.name === o.product);
-      const unitPriceInfo = latestUnitPriceByItem[o.product];
-      const basePrice = unitPriceInfo ? Math.round(unitPriceInfo.unitPrice * o.packSize * 100) / 100 : null;
-      const alias = (item?.aliases || []).find((al) => al.channel === o.platform && String(al.packSize) === String(o.packSize) && al.packUnit === o.packUnit);
-      map[key] = {
-        key,
-        legacyKey,
-        articleName: o.articleName || o.product,
-        product: o.product,
-        category: item?.category || '',
-        platform: o.platform,
-        code: alias?.code || '',
-        packSize: o.packSize,
-        packUnit: o.packUnit,
-        basePrice,
-      };
-    });
-  return Object.values(map).sort((a, b) => a.articleName.localeCompare(b.articleName));
-}
 
-// One indent (batch) may have several articles that don't yet have a purchase price —
-// those are simply left out of the running cost until they do (this is what makes the
-// batch's total climb from "day one" partial toward a complete figure as purchases happen).
-// Quantity marked short at packing time is subtracted from the pack count before costing
-// it, so a shortfall we never actually bought or sent out doesn't get counted as spend.
-function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
-  const batchOrders = orders.filter((o) => o.batchId === batch.id);
-  const batchCity = batch.city || CITIES[0];
-  const rows = batchOrders.map((o) => {
-    const key = `${batchCity}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
-    const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
-    const article = articlesByKey[key];
-    const packSize = Number(o.packSize) || 1;
-    const shortPacks = Math.min(Number(o.packQty) || 0, (Number(o.shortQty) || 0) / packSize);
-    const effectivePacks = Math.max(0, Math.round(((Number(o.packQty) || 0) - shortPacks) * 100) / 100);
-    const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[legacyKey]) : null;
-    const cost = finalPricePerPack == null ? null : Math.round(finalPricePerPack * effectivePacks * 100) / 100;
-    return {
-      orderId: o.id,
-      articleName: o.articleName || o.product,
-      code: article?.code || '',
-      packQty: Number(o.packQty) || 0,
-      shortPacks: Math.round(shortPacks * 100) / 100,
-      effectivePacks,
-      packSize: o.packSize,
-      packUnit: o.packUnit,
-      finalPricePerPack,
-      cost,
-    };
-  });
-  const pricedRows = rows.filter((r) => r.cost != null);
-  const totalCost = Math.round(pricedRows.reduce((s, r) => s + r.cost, 0) * 100) / 100;
-  return { rows, totalCost, pricedCount: pricedRows.length, totalCount: rows.length };
-}
 
 // Indent-wise fill rate: for a given uploaded indent, how much of what was ordered
 // (in the original pack unit) actually went out the door (dispatched) vs fell
@@ -3163,22 +3700,6 @@ function fillRateColor(rate) {
   return TOMATO;
 }
 
-function parseGrnRows(json) {
-  // Column-name order matters: Excel exports like Hyperpure's often have BOTH a
-  // "PO" and a "GRN" version of quantity/rate (and "Product UPC" alongside
-  // "Product Description") — the more specific "...GRN" / "...Description"
-  // candidates must be checked before the generic ones, or a generic match
-  // (e.g. "quantity") would grab the wrong column ("Quantity - PO") first.
-  return json
-    .map((r) => {
-      const code = String(pickField(r, ['itemcode', 'code', 'sku', 'articlecode', 'fsn']) || '').trim();
-      const name = String(pickField(r, ['productdescription', 'itemname', 'name', 'description', 'article', 'product']) || '').trim();
-      const qty = Number(pickField(r, ['quantitygrn', 'grnqty', 'receivedqty', 'accepted', 'qty', 'quantity']) || 0);
-      const price = Number(pickField(r, ['landingrategrn', 'grnlandingrate', 'rategrn', 'receivedprice', 'unitprice', 'unitrate', 'price', 'rate', 'landingrate']) || 0);
-      return { code, name, qty, price };
-    })
-    .filter((r) => (r.code || r.name) && r.qty > 0);
-}
 
 // ── Hyperpure / Blinkit GRN report PDFs — parsed client-side via pdf.js ──
 // Each article row in these PDFs follows a fixed column order once all the
@@ -3216,6 +3737,321 @@ async function extractPdfText(file) {
   return fullText;
 }
 
+const GRN_CODE_KEYS = ['productid', 'itemcode', 'code', 'sku', 'articlecode', 'fsn'];
+const GRN_NAME_KEYS = ['productdescription', 'itemname', 'name', 'description', 'article', 'product'];
+// "Received"/"accepted" must beat a generic "quantity", or a PO-ordered column wins.
+const GRN_QTY_KEYS = ['receivedquantity', 'quantitygrn', 'grnqty', 'receivedqty', 'accepted', 'qty', 'quantity'];
+const GRN_PRICE_KEYS = ['landingrategrn', 'grnlandingrate', 'rategrn', 'receivedprice', 'unitprice', 'unitrate', 'price', 'rate', 'landingrate'];
+
+const normaliseHeader = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function findColumnIndex(headerCells, candidates) {
+  const norm = headerCells.map(normaliseHeader);
+  for (const c of candidates) {
+    const i = norm.findIndex((h) => h.includes(c));
+    if (i !== -1) return i;
+  }
+  return -1;
+}
+
+// Takes the sheet as an array of arrays (sheet_to_json with header: 1).
+function parseGrnSheetRows(rows) {
+  let headerIdx = -1;
+  let cols = null;
+  for (let i = 0; i < rows.length; i += 1) {
+    const cells = rows[i] || [];
+    if (cells.length < 2) continue;
+    const qtyIdx = findColumnIndex(cells, GRN_QTY_KEYS);
+    const idIdx = findColumnIndex(cells, GRN_CODE_KEYS);
+    const nameIdx = findColumnIndex(cells, GRN_NAME_KEYS);
+    if (qtyIdx !== -1 && (idIdx !== -1 || nameIdx !== -1)) {
+      headerIdx = i;
+      cols = { code: idIdx, name: nameIdx, qty: qtyIdx, price: findColumnIndex(cells, GRN_PRICE_KEYS) };
+      break;
+    }
+  }
+  if (headerIdx === -1) return [];
+
+  const out = [];
+  for (let i = headerIdx + 1; i < rows.length; i += 1) {
+    const cells = rows[i] || [];
+    const code = cols.code === -1 ? '' : String(cells[cols.code] ?? '').trim();
+    const name = cols.name === -1 ? '' : String(cells[cols.name] ?? '').trim();
+    // The footer row has "Total" where the code/name belongs and no real article.
+    if (!code && !name) continue;
+    if (normaliseHeader(code) === 'total' || normaliseHeader(name) === 'total') continue;
+    const qty = Number(String(cells[cols.qty] ?? '').replace(/,/g, '')) || 0;
+    const price = cols.price === -1 ? 0 : Number(String(cells[cols.price] ?? '').replace(/,/g, '')) || 0;
+    if (qty > 0) out.push({ code, name, qty, price });
+  }
+  return out;
+}
+
+const PO_CODE_KEYS = ['productno', 'productid', 'itemcode', 'code', 'sku', 'articlecode', 'fsn'];
+const PO_NAME_KEYS = ['productname', 'productdetails', 'productdescription', 'itemname', 'name', 'description', 'article', 'product'];
+const PO_QTY_KEYS = ['qty', 'quantity', 'orderedqty', 'poquantity'];
+const PO_PRICE_KEYS = ['priceperunit', 'perunitprice', 'unitprice', 'landingrate', 'rate', 'price'];
+const PO_TOTAL_KEYS = ['totalamount', 'linetotal', 'total', 'amount', 'value'];
+
+function parsePoSheetRows(rows) {
+  let headerIdx = -1;
+  let headerSpan = 1; // some exports (Flipkart's own PO) wrap the header onto two lines
+  let cols = null;
+  for (let i = 0; i < rows.length && headerIdx === -1; i += 1) {
+    const cells = rows[i] || [];
+    if (cells.length < 2) continue;
+    for (const span of [1, 2]) {
+      const merged = span === 1 ? cells : cells.map((c, idx) => {
+        const c2 = (rows[i + 1] || [])[idx];
+        return [c, c2].filter((x) => x !== undefined && x !== null && x !== '').join(' ');
+      });
+      const priceIdx = findColumnIndex(merged, PO_PRICE_KEYS);
+      const qtyIdx = findColumnIndex(merged, PO_QTY_KEYS);
+      const idIdx = findColumnIndex(merged, PO_CODE_KEYS);
+      // A "Product ID" column can also contain the word "product", which is one
+      // of the name candidates too — exclude whichever column matched the code
+      // so the two never collide onto the same column.
+      const nameIdx = findColumnIndex(merged.map((v, idx) => (idx === idIdx ? '' : v)), PO_NAME_KEYS);
+      const totalIdx = findColumnIndex(merged, PO_TOTAL_KEYS);
+      if (qtyIdx !== -1 && (priceIdx !== -1 || totalIdx !== -1) && (idIdx !== -1 || nameIdx !== -1)) {
+        headerIdx = i;
+        headerSpan = span;
+        cols = { code: idIdx, name: nameIdx, qty: qtyIdx, price: priceIdx, total: totalIdx };
+        break;
+      }
+    }
+  }
+  if (headerIdx === -1) return [];
+  const num = (v) => Number(String(v == null ? '' : v).replace(/[^0-9.-]/g, '')) || 0;
+  const out = [];
+  for (let i = headerIdx + headerSpan; i < rows.length; i += 1) {
+    const cells = rows[i] || [];
+    const code = cols.code === -1 ? '' : String(cells[cols.code] == null ? '' : cells[cols.code]).trim();
+    const name = cols.name === -1 ? '' : String(cells[cols.name] == null ? '' : cells[cols.name]).trim();
+    if (!code && !name) continue;
+    if (normaliseHeader(code) === 'total' || normaliseHeader(name) === 'total') continue;
+    const qty = num(cells[cols.qty]);
+    let price = cols.price === -1 ? 0 : num(cells[cols.price]);
+    const total = cols.total === -1 ? 0 : num(cells[cols.total]);
+    if (!price && total && qty) price = Math.round((total / qty) * 100) / 100;
+    if (qty > 0 && price > 0) out.push({ code, name, qty, price, total: total || Math.round(qty * price * 100) / 100 });
+  }
+  return out;
+}
+
+function parsePoPdfText(text) {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const pattern = /(\d{7,9}) (.+?) (\d{8}) (\d+\.\d{2}) (\d+\.\d{2}) (\d+) (\d+\.\d{2}) .*?(\d+)% (\d+\.\d{2}) (\d+\.\d{2})/g;
+  const rows = [];
+  let m;
+  while ((m = pattern.exec(flat)) !== null) {
+    const qty = Number(m[6]) || 0;
+    const price = Number(m[7]) || 0;
+    if (qty > 0 && price > 0) rows.push({ code: m[1].trim(), name: m[2].trim(), qty, price, total: Number(m[10]) || Math.round(qty * price * 100) / 100 });
+  }
+  return rows;
+}
+
+function grnValueForBatch(batchId, grnReports, items, articlesByKey, configByKey, city, platform) {
+  let value = 0;
+  let pricedRows = 0;
+  let unpricedRows = 0;
+
+  const priceForCode = (code) => {
+    if (!code) return null;
+    const lower = String(code).toLowerCase();
+    const item = (items || []).find((it) => (it.aliases || []).some((a) =>
+      (a.code && a.code.toLowerCase() === lower) || (a.ean && a.ean.toLowerCase() === lower) || (a.altCode && a.altCode.toLowerCase() === lower)));
+    if (!item) return null;
+    const alias = (item.aliases || []).find((a) => a.channel === platform) || (item.aliases || [])[0];
+    if (!alias || !alias.packSize) return null;
+    const key = `${city}__${item.name}__${platform}__${alias.packSize}__${alias.packUnit}`;
+    const legacyKey = `${item.name}__${platform}__${alias.packSize}__${alias.packUnit}`;
+    const article = articlesByKey?.[key];
+    if (!article) return null;
+    return computeFinalPrice(article.basePrice, configByKey?.[key] || configByKey?.[legacyKey]);
+  };
+
+  grnReports.filter((g) => g.batchId === batchId).forEach((g) => {
+    (g.rows || []).forEach((r) => {
+      const qty = Number(r.qty) || 0;
+      if (qty <= 0) return;
+      const filePrice = Number(r.price) || 0;
+      if (filePrice > 0) { value += qty * filePrice; pricedRows += 1; return; }
+      const ourPrice = priceForCode(r.code);
+      if (ourPrice != null && ourPrice > 0) { value += qty * ourPrice; pricedRows += 1; }
+      else unpricedRows += 1;
+    });
+  });
+  return { value: Math.round(value * 100) / 100, pricedRows, unpricedRows };
+}
+
+function matchChannelRow(row, costRows, items) {
+  const code = String(row.code || '').toLowerCase();
+  if (code) {
+    const item = items.find((it) => (it.aliases || []).some((a) =>
+      (a.code && a.code.toLowerCase() === code) || (a.ean && a.ean.toLowerCase() === code) || (a.altCode && a.altCode.toLowerCase() === code)));
+    if (item) {
+      const hit = costRows.find((cr) => String(cr.articleName).toLowerCase().indexOf(String(item.name).toLowerCase()) !== -1);
+      if (hit) return hit;
+    }
+    const byCode = costRows.find((cr) => String(cr.code || '').toLowerCase() === code);
+    if (byCode) return byCode;
+  }
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const n = norm(row.name);
+  if (!n) return null;
+  return costRows.find((cr) => {
+    const a = norm(cr.articleName);
+    return a && (a === n || a.indexOf(n) !== -1 || n.indexOf(a) !== -1);
+  }) || null;
+}
+
+function buildPricingArticles(orders, items, purchases, city, configByKey) {
+  const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
+  const map = {};
+  orders
+    .filter((o) => o.packSize && o.packUnit)
+    .forEach((o) => {
+      const key = `${city}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      // Pre-fix pricingConfig docs were saved without a city prefix at all, shared across
+      // every city. Keeping this around lets a city inherit those old settings the first
+      // time it prices this article, instead of silently resetting everyone to zero.
+      const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      if (map[key]) return;
+      const item = items.find((it) => it.name === o.product);
+      const unitPriceInfo = latestUnitPriceByItem[o.product];
+      const autoBasePrice = unitPriceInfo ? Math.round(unitPriceInfo.unitPrice * o.packSize * 100) / 100 : null;
+      // A base price fetched from the latest purchase is the default — but a specific
+      // article's config can carry a manual override (e.g. before any purchase exists yet,
+      // or to correct a one-off odd purchase price) which always wins when set.
+      const config = configByKey?.[key] || configByKey?.[legacyKey];
+      const hasOverride = config?.basePriceOverride != null;
+      const basePrice = hasOverride ? config.basePriceOverride : autoBasePrice;
+      const alias = (item?.aliases || []).find((al) => al.channel === o.platform && String(al.packSize) === String(o.packSize) && al.packUnit === o.packUnit);
+      map[key] = {
+        key,
+        legacyKey,
+        articleName: o.articleName || o.product,
+        product: o.product,
+        category: item?.category || '',
+        platform: o.platform,
+        code: alias?.code || '',
+        packSize: o.packSize,
+        packUnit: o.packUnit,
+        basePrice,
+        autoBasePrice,
+        hasBasePriceOverride: hasOverride,
+      };
+    });
+  return Object.values(map).sort((a, b) => a.articleName.localeCompare(b.articleName));
+}
+
+function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
+  const batchOrders = orders.filter((o) => o.batchId === batch.id && !o.isAdvance);
+  const batchCity = batch.city || CITIES[0];
+  const rows = batchOrders.map((o) => {
+    const key = `${batchCity}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+    const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+    const article = articlesByKey[key];
+    const packSize = Number(o.packSize) || 1;
+    const shortPacks = Math.min(Number(o.packQty) || 0, (Number(o.shortQty) || 0) / packSize);
+    const effectivePacks = Math.max(0, Math.round(((Number(o.packQty) || 0) - shortPacks) * 100) / 100);
+    const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[legacyKey]) : null;
+    const cost = finalPricePerPack == null ? null : Math.round(finalPricePerPack * effectivePacks * 100) / 100;
+    return {
+      orderId: o.id,
+      articleName: o.articleName || o.product,
+      code: article?.code || '',
+      packQty: Number(o.packQty) || 0,
+      shortPacks: Math.round(shortPacks * 100) / 100,
+      effectivePacks,
+      packSize: o.packSize,
+      packUnit: o.packUnit,
+      finalPricePerPack,
+      cost,
+    };
+  });
+  const pricedRows = rows.filter((r) => r.cost != null);
+  const totalCost = Math.round(pricedRows.reduce((s, r) => s + r.cost, 0) * 100) / 100;
+  return { rows, totalCost, pricedCount: pricedRows.length, totalCount: rows.length };
+}
+
+function dailySalesFromGrn(grnReports, batchFinancials) {
+  const byDate = {};
+  batchFinancials.forEach((bf) => {
+    if (bf.grnValue <= 0) return;
+    const reports = grnReports.filter((g) => g.batchId === bf.batch.id);
+    const date = (reports[0] && reports[0].date) || bf.batch.purchaseDate || '-';
+    if (!byDate[date]) byDate[date] = { date, total: 0, cost: 0 };
+    byDate[date].total = Math.round((byDate[date].total + bf.grnValue) * 100) / 100;
+    byDate[date].cost = Math.round((byDate[date].cost + bf.indentCost) * 100) / 100;
+  });
+  return Object.values(byDate).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+
+const BANK_STMT_DATE_KEYS = ['transactiondate', 'txndate', 'valuedate', 'date'];
+const BANK_STMT_PARTICULARS_KEYS = ['particulars', 'narration', 'description', 'transactiondetails', 'remarks'];
+const BANK_STMT_CREDIT_KEYS = ['credit', 'creditamt', 'depositamt', 'creditamount'];
+// Which channel each bank-statement payer actually pays down. Zomato Hyperpure
+// settles Blinkit indents and Duffers Farm settles Flipkart indents for this
+// business — a real relationship stated by the business, not something the
+// statement itself declares, so this mapping needs updating if that changes.
+const BANK_STMT_PAYMENT_SOURCES = [
+  { platform: 'Blinkit', keywords: ['ZOMATO', 'HYPERPURE'] },
+  { platform: 'Flipkart', keywords: ['DUFFER'] },
+];
+const BANK_STMT_MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+function normaliseStatementDate(v) {
+  if (v instanceof Date) return v.toISOString().split('T')[0];
+  const s = String(v == null ? '' : v).trim();
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/); // "01-Aug-2026", the format IDFC First (and many banks) export
+  if (m) {
+    const mon = BANK_STMT_MONTHS[m[2].toLowerCase()];
+    if (mon) return `${m[3]}-${mon}-${m[1].padStart(2, '0')}`;
+  }
+  if (/^\d+(\.\d+)?$/.test(s)) { // Excel date serial, in case a bank exports real date cells
+    const d = new Date(Math.round((Number(s) - 25569) * 86400 * 1000));
+    if (!isNaN(d)) return d.toISOString().split('T')[0];
+  }
+  return s;
+}
+
+function parseBankStatementRows(rows) {
+  let headerIdx = -1, cols = null;
+  for (let i = 0; i < rows.length; i += 1) {
+    const cells = rows[i] || [];
+    if (cells.length < 3) continue;
+    const dateIdx = findColumnIndex(cells, BANK_STMT_DATE_KEYS);
+    const particularsIdx = findColumnIndex(cells, BANK_STMT_PARTICULARS_KEYS);
+    const creditIdx = findColumnIndex(cells, BANK_STMT_CREDIT_KEYS);
+    if (dateIdx !== -1 && particularsIdx !== -1 && creditIdx !== -1) {
+      headerIdx = i;
+      cols = { date: dateIdx, particulars: particularsIdx, credit: creditIdx };
+      break;
+    }
+  }
+  if (headerIdx === -1) return [];
+  const num = (v) => Number(String(v == null ? '' : v).replace(/[^0-9.-]/g, '')) || 0;
+  const out = [];
+  for (let i = headerIdx + 1; i < rows.length; i += 1) {
+    const cells = rows[i] || [];
+    const particulars = String(cells[cols.particulars] == null ? '' : cells[cols.particulars]).trim();
+    if (!particulars) continue;
+    const credit = num(cells[cols.credit]);
+    if (!credit) continue; // a debit or an empty row either way — not money received
+    const up = particulars.toUpperCase();
+    const source = BANK_STMT_PAYMENT_SOURCES.find((s) => s.keywords.some((k) => up.includes(k)));
+    if (!source) continue;
+    // Transfer reference sits as the 2nd "/"-separated segment in every mode
+    // seen so far (NEFT/HDFCH0116.../..., IMPS/6219.../..., UPI/DR/6213.../...)
+    const segs = particulars.split('/');
+    const ref = (segs.length > 2 ? segs[1] : null) || `row${i}`;
+    out.push({ id: `BSPAY-${ref}`, date: normaliseStatementDate(cells[cols.date]), amount: credit, platform: source.platform, reference: ref, particulars });
+  }
+  return out;
+}
+
 function parseGrnPdfText(text) {
   const flat = text.replace(/\s+/g, ' ').trim();
   const pattern = /(\d+) (\d{6,8}) (\d{6,10}) (\d{3,4}) (.*?) (\d+\.\d{2}) (\d+\.\d{2}) (\d+\.\d{2}) (\d+\.\d{2}|-) (\d+) (\d+) (\d+\.\d{2}) (\d+\.\d{2}) (\d+\.\d{2})/g;
@@ -3229,6 +4065,525 @@ function parseGrnPdfText(text) {
   }
   return rows;
 }
+
+// ── Sales (mobile) — same verified logic as the admin panel, laid out in a
+// single narrow column instead of the admin's wide multi-panel grid ──
+function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
+  const [view, setView] = useState('overview');
+  const [openBatchId, setOpenBatchId] = useState(null);
+  const configByKey = useMemo(() => { const m = {}; pricingConfig.forEach((x) => { m[x.id] = x; }); return m; }, [pricingConfig]);
+  const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city, configByKey), [orders, items, purchases, city, configByKey]);
+  const articlesByKey = useMemo(() => { const m = {}; articles.forEach((a) => { m[a.key] = a; }); return m; }, [articles]);
+
+  const batchFinancials = useMemo(() => indentBatches.filter((b) => !b.isAdvance).map((b) => {
+    const costs = computeBatchArticleCosts(b, orders, articlesByKey, configByKey);
+    const grn = grnValueForBatch(b.id, grnReports, items, articlesByKey, configByKey, city, b.platform);
+    // A batch can have more than one PO — the channel sometimes tops up an
+    // indent with a second PO rather than reissuing the whole thing — so these
+    // accumulate the same way GRN reports do, never replacing an earlier one.
+    const poReports = b.poReports && b.poReports.length > 0
+      ? b.poReports
+      : (b.poRows && b.poRows.length > 0 ? [{ id: 'legacy', fileName: b.poFileName || 'PO', rows: b.poRows }] : []); // older batches saved before multi-PO support
+    const poRows = poReports.flatMap((r) => r.rows);
+    const poValue = poRows.length > 0
+      ? Math.round(poRows.reduce((s, r) => s + (Number(r.total) || 0), 0) * 100) / 100
+      : (b.poValue != null ? Number(b.poValue) : null);
+    return {
+      batch: b,
+      indentCost: costs.totalCost,
+      costRows: costs.rows,
+      pricedCount: costs.pricedCount,
+      totalCount: costs.totalCount,
+      poReports,
+      poRows,
+      poValue,
+      expectedProfit: poValue == null ? null : Math.round((poValue - costs.totalCost) * 100) / 100,
+      grnValue: grn.value,
+      grnUnpricedRows: grn.unpricedRows,
+      hasGrn: grnReports.some((g) => g.batchId === b.id),
+      netProfit: grn.value > 0 ? Math.round((grn.value - costs.totalCost) * 100) / 100 : null,
+      invoice: salesInvoices.find((inv) => (inv.batchIds || []).includes(b.id)),
+    };
+  }), [indentBatches, orders, articlesByKey, configByKey, city, grnReports, salesInvoices, items]);
+
+  const openBatch = openBatchId ? batchFinancials.find((bf) => bf.batch.id === openBatchId) : null;
+  if (openBatch) {
+    return (
+      <SalesBatchDetailMobile
+        bf={openBatch}
+        items={items}
+        reports={grnReports.filter((g) => g.batchId === openBatch.batch.id)}
+        onBack={() => setOpenBatchId(null)}
+        onUploadGrn={onUploadGrn}
+        onUpdateIndentBatch={onUpdateIndentBatch}
+      />
+    );
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ marginBottom: 12 }}>
+        <Chip label="Overview" active={view === 'overview'} onClick={() => setView('overview')} />
+        <Chip label="Indents & P&L" active={view === 'batches'} onClick={() => setView('batches')} />
+        <Chip label="Invoices" active={view === 'invoices'} onClick={() => setView('invoices')} />
+        <Chip label="Payments" active={view === 'payments'} onClick={() => setView('payments')} />
+      </div>
+      {view === 'overview' && <SalesOverviewMobile batchFinancials={batchFinancials} grnReports={grnReports} salesInvoices={salesInvoices} salesPayments={salesPayments} />}
+      {view === 'batches' && <SalesBatchesMobile batchFinancials={batchFinancials} onOpen={setOpenBatchId} />}
+      {view === 'invoices' && <SalesInvoicesMobile batchFinancials={batchFinancials} salesInvoices={salesInvoices} salesPayments={salesPayments} onSaveInvoice={onSaveInvoice} onDeleteInvoice={onDeleteInvoice} />}
+      {view === 'payments' && <SalesPaymentsMobile batchFinancials={batchFinancials} salesInvoices={salesInvoices} salesPayments={salesPayments} onSavePayment={onSavePayment} onDeletePayment={onDeletePayment} />}
+    </div>
+  );
+}
+
+function SalesOverviewMobile({ batchFinancials, grnReports, salesInvoices, salesPayments }) {
+  const daily = dailySalesFromGrn(grnReports, batchFinancials);
+  const grandSales = Math.round(daily.reduce((s, d) => s + d.total, 0) * 100) / 100;
+  const grandCost = Math.round(daily.reduce((s, d) => s + d.cost, 0) * 100) / 100;
+  const grandProfit = Math.round((grandSales - grandCost) * 100) / 100;
+
+  const cards = PLATFORMS.map((platform) => {
+    const bfs = batchFinancials.filter((bf) => bf.batch.platform === platform);
+    const grn = Math.round(bfs.reduce((s, bf) => s + bf.grnValue, 0) * 100) / 100;
+    const owed = platform === 'Flipkart'
+      ? Math.round(salesInvoices.filter((i) => i.platform === platform).reduce((s, i) => s + (Number(i.amount) || 0), 0) * 100) / 100
+      : grn;
+    const received = Math.round(salesPayments.filter((p) => p.platform === platform).reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100) / 100;
+    return { platform, grn, owed, received, outstanding: Math.round((owed - received) * 100) / 100 };
+  });
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>SALES (GRN)</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: LEAF }}>{money(grandSales)}</div>
+        </Card>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>COST</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: TOMATO }}>{money(grandCost)}</div>
+        </Card>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>PROFIT</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: grandProfit >= 0 ? LEAF : TOMATO }}>{money(grandProfit)}</div>
+        </Card>
+      </div>
+
+      <Card style={{ marginBottom: 12 }}>
+        <div style={sectionTitle}>Daily sales</div>
+        <div style={hint}>Built only from uploaded GRN reports. Days without a GRN yet don't appear.</div>
+        {daily.length === 0 ? (
+          <div style={{ fontSize: 12, color: MUTED }}>No GRN reports uploaded yet.</div>
+        ) : (
+          [...daily].reverse().map((d) => {
+            const profit = Math.round((d.total - d.cost) * 100) / 100;
+            return (
+              <div key={d.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${LINE}` }}>
+                <div style={{ fontSize: 12, color: INK, fontWeight: 700 }}>{d.date}</div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <span style={{ fontSize: 11, color: LEAF }}>S {money(d.total)}</span>
+                  <span style={{ fontSize: 11, color: TOMATO }}>C {money(d.cost)}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: profit >= 0 ? LEAF : TOMATO }}>{money(profit)}</span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </Card>
+
+      {cards.map((c) => (
+        <Card key={c.platform} style={{ marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>{c.platform}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}><span style={{ color: MUTED }}>Accepted (GRN)</span><span style={{ fontWeight: 700 }}>{money(c.grn)}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}><span style={{ color: MUTED }}>{c.platform === 'Flipkart' ? 'Invoiced' : 'Owed (GRN)'}</span><span style={{ fontWeight: 700 }}>{money(c.owed)}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}><span style={{ color: MUTED }}>Received</span><span style={{ fontWeight: 700, color: LEAF }}>{money(c.received)}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, borderTop: `1px solid ${LINE}`, paddingTop: 6, marginTop: 4 }}>
+            <span style={{ fontWeight: 700 }}>Outstanding</span>
+            <span style={{ fontWeight: 800, color: c.outstanding > 0 ? TOMATO : LEAF }}>{money(c.outstanding)}</span>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function SalesBatchesMobile({ batchFinancials, onOpen }) {
+  const sorted = [...batchFinancials].sort((a, b) => String(b.batch.id).localeCompare(String(a.batch.id)));
+  return (
+    <div>
+      {sorted.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No indent batches yet.</div></Card>}
+      {sorted.map((bf) => (
+        <Card key={bf.batch.id} style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+            <div>
+              <div style={{ fontFamily: 'monospace', fontSize: 11, color: MUTED }}>{bf.batch.id}</div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{bf.batch.platform}</div>
+            </div>
+            <button onClick={() => onOpen(bf.batch.id)} style={{ background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700 }}>Open ›</button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11 }}>
+            <span style={{ color: MUTED }}>Cost <b style={{ color: INK }}>{money(bf.indentCost)}</b></span>
+            <span style={{ color: MUTED }}>PO <b style={{ color: INK }}>{bf.poValue == null ? '—' : money(bf.poValue)}</b></span>
+            <span style={{ color: MUTED }}>GRN <b style={{ color: INK }}>{bf.hasGrn ? money(bf.grnValue) : '—'}</b></span>
+            <span style={{ color: MUTED }}>Net <b style={{ color: bf.netProfit == null ? INK : (bf.netProfit >= 0 ? LEAF : TOMATO) }}>{bf.netProfit == null ? '—' : money(bf.netProfit)}</b></span>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpdateIndentBatch }) {
+  const poRef = useRef(null);
+  const grnRef = useRef(null);
+  const [poError, setPoError] = useState('');
+  const [grnError, setGrnError] = useState('');
+  const batch = bf.batch;
+  const batchDate = batch.purchaseDate || new Date().toISOString().split('T')[0];
+
+  const handlePoFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setPoError('');
+    const finish = (rows, name) => {
+      if (!rows.length) { setPoError('Could not find any priced article rows in this PO.'); return; }
+      const newReport = { id: `PO-${Date.now().toString(36).toUpperCase()}`, fileName: name, rows };
+      onUpdateIndentBatch(batch.id, { poReports: [...bf.poReports, newReport] });
+    };
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      extractPdfText(file).then((t) => finish(parsePoPdfText(t), file.name)).catch(() => setPoError('Could not read this PDF.'));
+      e.target.value = ''; return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        finish(parsePoSheetRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })), file.name);
+      } catch (err) { setPoError('Could not read this file — use .xlsx, .xls, .csv or .pdf.'); }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const handleGrnFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setGrnError('');
+    const finish = (rows, name) => {
+      if (!rows.length) { setGrnError('No valid GRN rows found in this file.'); return; }
+      onUploadGrn(batch.platform, batchDate, name, rows, batch.id);
+    };
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      extractPdfText(file).then((t) => finish(parseGrnPdfText(t), file.name)).catch(() => setGrnError('Could not read this PDF.'));
+      e.target.value = ''; return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        finish(parseGrnSheetRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })), file.name);
+      } catch (err) { setGrnError('Could not read this file — use .xlsx, .xls, .csv or .pdf.'); }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const comparison = useMemo(() => bf.poRows.map((po) => {
+    const cr = matchChannelRow(po, bf.costRows, items);
+    const ourCost = cr && cr.finalPricePerPack != null ? cr.finalPricePerPack : null;
+    const margin = ourCost == null ? null : Math.round((po.price - ourCost) * 100) / 100;
+    return { po, ourCost, margin };
+  }), [bf.poRows, bf.costRows, items]);
+
+  const btn = { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.md, padding: '9px 0', fontSize: 12, fontWeight: 700, flex: 1 };
+
+  return (
+    <div style={{ padding: 16 }}>
+      <button onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 13, padding: 0, marginBottom: 12 }}>
+        <ArrowLeft size={15} /> Back to indents
+      </button>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>COST</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: TOMATO }}>{money(bf.indentCost)}</div>
+        </Card>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>PO VALUE</div>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>{bf.poValue == null ? '—' : money(bf.poValue)}</div>
+          <div style={{ fontSize: 9, color: MUTED, marginTop: 2 }}>
+            {bf.poRows.length > 0 ? `${bf.poRows.length} article${bf.poRows.length === 1 ? '' : 's'} · ${bf.poReports.length} PO${bf.poReports.length === 1 ? '' : 's'}` : 'No PO uploaded'}
+          </div>
+        </Card>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>EXPECTED PROFIT</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: bf.expectedProfit == null ? INK : (bf.expectedProfit >= 0 ? LEAF : TOMATO) }}>{bf.expectedProfit == null ? '—' : money(bf.expectedProfit)}</div>
+        </Card>
+        <Card style={{ flex: 1, padding: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>NET PROFIT</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: bf.netProfit == null ? INK : (bf.netProfit >= 0 ? LEAF : TOMATO) }}>{bf.netProfit == null ? '—' : money(bf.netProfit)}</div>
+        </Card>
+      </div>
+
+      <Card style={{ marginBottom: 12 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{batch.platform} — {batch.fileName}</div>
+        <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Indent date {batchDate}</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => poRef.current && poRef.current.click()} style={btn}><Upload size={12} /> {bf.poReports.length ? 'Add another PO' : 'Add PO'}</button>
+          <input ref={poRef} type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={handlePoFile} style={{ display: 'none' }} />
+          <button onClick={() => grnRef.current && grnRef.current.click()} style={btn}><Upload size={12} /> {reports.length ? 'Add GRN' : 'Upload GRN'}</button>
+          <input ref={grnRef} type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={handleGrnFile} style={{ display: 'none' }} />
+        </div>
+        {poError && <div style={{ fontSize: 11, color: TOMATO, marginTop: 6 }}>{poError}</div>}
+        {grnError && <div style={{ fontSize: 11, color: TOMATO, marginTop: 6 }}>{grnError}</div>}
+        {bf.poReports.length > 0 && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: MUTED }}>{bf.poReports.length} PO REPORT{bf.poReports.length === 1 ? '' : 'S'}</div>
+            {bf.poReports.map((r) => <div key={r.id} style={{ fontSize: 11, color: MUTED }}>{r.fileName}</div>)}
+          </div>
+        )}
+        {reports.length > 0 && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: MUTED }}>{reports.length} GRN REPORT{reports.length === 1 ? '' : 'S'}</div>
+            {reports.map((g) => <div key={g.id} style={{ fontSize: 11, color: MUTED }}>{g.fileName}</div>)}
+            {bf.grnUnpricedRows > 0 && <div style={{ fontSize: 11, color: AMBER, marginTop: 4 }}>{bf.grnUnpricedRows} row(s) couldn't be priced.</div>}
+          </div>
+        )}
+      </Card>
+
+      {bf.poRows.length > 0 && (
+        <Card style={{ marginBottom: 12 }}>
+          <div style={sectionTitle}>Price check</div>
+          <div style={hint}>Green covers our cost; red means a loss on that article.</div>
+          {comparison.map((c, i) => {
+            const good = c.margin != null && c.margin >= 0;
+            return (
+              <div key={i} style={{ background: c.margin == null ? 'transparent' : (good ? 'rgba(47,82,51,0.07)' : 'rgba(217,85,44,0.09)'), borderRadius: 6, padding: '6px 8px', marginBottom: 4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>{c.po.name || c.po.code}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED }}>
+                  <span>Our cost: {c.ourCost == null ? 'No match' : money(c.ourCost)}</span>
+                  <span>PO: {money(c.po.price)}</span>
+                  <span style={{ fontWeight: 700, color: c.margin == null ? MUTED : (good ? LEAF : TOMATO) }}>{c.margin == null ? '—' : `${c.margin >= 0 ? '+' : ''}${money(c.margin)}`}</span>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      <Card>
+        <div style={sectionTitle}>Cost breakdown ({bf.pricedCount}/{bf.totalCount} priced)</div>
+        {bf.costRows.map((r) => (
+          <div key={r.orderId} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${LINE}` }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>{r.articleName}</div>
+              <div style={{ fontSize: 10, color: MUTED }}>{r.effectivePacks} packs{r.shortPacks > 0 ? ` · ${r.shortPacks} short` : ''}</div>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: r.cost == null ? MUTED : LEAF }}>{r.cost == null ? 'No price' : money(r.cost)}</div>
+          </div>
+        ))}
+        {bf.costRows.length === 0 && <div style={{ fontSize: 12, color: MUTED }}>No articles in this indent.</div>}
+      </Card>
+    </div>
+  );
+}
+
+function SalesInvoicesMobile({ batchFinancials, salesInvoices, salesPayments, onSaveInvoice, onDeleteInvoice }) {
+  const [creating, setCreating] = useState(false);
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [amount, setAmount] = useState('');
+  const [selectedBatchIds, setSelectedBatchIds] = useState([]);
+
+  const uninvoicedBatches = batchFinancials.filter((bf) => bf.batch.platform === 'Flipkart' && !bf.invoice);
+  const toggleBatch = (id) => setSelectedBatchIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const receivedFor = (invoiceId) => Math.round(salesPayments.filter((p) => p.linkedInvoiceId === invoiceId).reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100) / 100;
+
+  const save = () => {
+    if (!invoiceNumber.trim() || !amount || selectedBatchIds.length === 0) return;
+    onSaveInvoice({ id: `INV-${Date.now().toString(36).toUpperCase()}`, platform: 'Flipkart', invoiceNumber: invoiceNumber.trim(), invoiceDate, amount: Number(amount), batchIds: selectedBatchIds });
+    setCreating(false); setInvoiceNumber(''); setAmount(''); setSelectedBatchIds([]);
+  };
+
+  const flipkartInvoices = salesInvoices.filter((inv) => inv.platform === 'Flipkart');
+
+  return (
+    <div>
+      {!creating ? (
+        <button onClick={() => setCreating(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.md, padding: '9px 14px', fontWeight: 700, fontSize: 12, marginBottom: 12 }}>
+          <Plus size={13} /> New invoice
+        </button>
+      ) : (
+        <Card style={{ marginBottom: 12 }}>
+          <div style={sectionTitle}>New Flipkart invoice</div>
+          <div style={smallLabel}>INVOICE NUMBER</div>
+          <Field value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
+          <div style={smallLabel}>INVOICE DATE</div>
+          <Field type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+          <div style={smallLabel}>AMOUNT (₹)</div>
+          <Field type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <div style={{ ...smallLabel, marginTop: 8 }}>BATCHES COVERED</div>
+          <div style={{ maxHeight: 140, overflowY: 'auto', border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, marginBottom: 10 }}>
+            {uninvoicedBatches.length === 0 && <div style={{ fontSize: 11, color: MUTED }}>No un-invoiced Flipkart batches with GRN data yet.</div>}
+            {uninvoicedBatches.map((bf) => (
+              <label key={bf.batch.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 6 }}>
+                <input type="checkbox" checked={selectedBatchIds.includes(bf.batch.id)} onChange={() => toggleBatch(bf.batch.id)} />
+                {bf.batch.id} — GRN {money(bf.grnValue)}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={save}>Save invoice</PrimaryBtn>
+            <button onClick={() => setCreating(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: RADIUS.md, padding: '10px 16px', fontWeight: 700, fontSize: 12 }}>Cancel</button>
+          </div>
+        </Card>
+      )}
+      {flipkartInvoices.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No invoices yet.</div></Card>}
+      {flipkartInvoices.map((inv) => {
+        const received = receivedFor(inv.id);
+        const outstanding = Math.round((Number(inv.amount) - received) * 100) / 100;
+        return (
+          <Card key={inv.id} style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{inv.invoiceNumber}</div>
+              <button onClick={() => { if (window.confirm(`Delete invoice ${inv.invoiceNumber}?`)) onDeleteInvoice(inv.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={14} /></button>
+            </div>
+            <div style={{ fontSize: 11, color: MUTED, marginBottom: 4 }}>{inv.invoiceDate}</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+              <span>Amount: <b>{money(inv.amount)}</b></span>
+              <span>Received: <b style={{ color: LEAF }}>{money(received)}</b></span>
+              <span style={{ fontWeight: 700, color: outstanding > 0 ? TOMATO : LEAF }}>{money(outstanding)}</span>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function SalesPaymentsMobile({ batchFinancials, salesInvoices, salesPayments, onSavePayment, onDeletePayment }) {
+  const [logging, setLogging] = useState(false);
+  const [platform, setPlatform] = useState(PLATFORMS[0]);
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [amount, setAmount] = useState('');
+  const [reference, setReference] = useState('');
+  const [linkedId, setLinkedId] = useState('');
+  const bankRef = useRef(null);
+  const [bankError, setBankError] = useState('');
+  const [bankResult, setBankResult] = useState(null);
+
+  const platformInvoices = salesInvoices.filter((inv) => inv.platform === platform);
+  const platformBatches = batchFinancials.filter((bf) => bf.batch.platform === platform);
+
+  const save = () => {
+    if (!amount) return;
+    onSavePayment({
+      id: `PAY-${Date.now().toString(36).toUpperCase()}`,
+      platform, date, amount: Number(amount), reference: reference.trim(),
+      linkedInvoiceId: platform === 'Flipkart' ? linkedId : null,
+      linkedBatchId: platform !== 'Flipkart' ? linkedId : null,
+    });
+    setLogging(false); setAmount(''); setReference(''); setLinkedId('');
+  };
+
+  // Detects Zomato/Hyperpure (Blinkit) and Duffers Farm (Flipkart) credits in an
+  // uploaded bank statement and logs each as a payment — keyed by the bank's own
+  // reference number, so re-uploading the same statement won't double-count.
+  const handleBankStatementFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setBankError(''); setBankResult(null);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        const sheetName = wb.SheetNames.find((n) => /statement/i.test(n)) || wb.SheetNames[0];
+        const found = parseBankStatementRows(XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' }));
+        if (!found.length) { setBankError('No Zomato/Hyperpure or Duffers Farm credits were found in this statement.'); return; }
+        found.forEach((f) => onSavePayment({ id: f.id, platform: f.platform, date: f.date, amount: f.amount, reference: f.reference, auto: true, particulars: f.particulars }));
+        setBankResult({ count: found.length, total: Math.round(found.reduce((s, f) => s + f.amount, 0) * 100) / 100 });
+      } catch (err) { setBankError('Could not read this file — use the .xlsx your bank exports.'); }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const outstandingByPlatform = PLATFORMS.map((p) => {
+    const owed = p === 'Flipkart'
+      ? salesInvoices.filter((inv) => inv.platform === p).reduce((s, inv) => s + (Number(inv.amount) || 0), 0)
+      : batchFinancials.filter((bf) => bf.batch.platform === p).reduce((s, bf) => s + bf.grnValue, 0);
+    const received = salesPayments.filter((pay) => pay.platform === p).reduce((s, pay) => s + (Number(pay.amount) || 0), 0);
+    return { platform: p, outstanding: Math.round((owed - received) * 100) / 100 };
+  });
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        {outstandingByPlatform.map((o) => (
+          <Card key={o.platform} style={{ flex: 1, padding: 10 }}>
+            <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>{o.platform.toUpperCase()} DUE</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: o.outstanding > 0 ? TOMATO : LEAF }}>{money(o.outstanding)}</div>
+          </Card>
+        ))}
+      </div>
+      {!logging ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+          <button onClick={() => setLogging(true)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.md, padding: '9px 14px', fontWeight: 700, fontSize: 12 }}>
+            <Plus size={13} /> Log payment
+          </button>
+          <button onClick={() => bankRef.current && bankRef.current.click()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.md, padding: '9px 14px', fontWeight: 700, fontSize: 12 }}>
+            <Upload size={13} /> Upload bank statement
+          </button>
+          <input ref={bankRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleBankStatementFile} style={{ display: 'none' }} />
+          {bankError && <div style={{ fontSize: 11, color: TOMATO }}>{bankError}</div>}
+          {bankResult && <div style={{ fontSize: 11, color: LEAF }}>Logged {bankResult.count} payment{bankResult.count === 1 ? '' : 's'} ({money(bankResult.total)}) — Zomato/Hyperpure → Blinkit, Duffers Farm → Flipkart.</div>}
+        </div>
+      ) : (
+        <Card style={{ marginBottom: 12 }}>
+          <div style={sectionTitle}>Log a payment received</div>
+          <div style={smallLabel}>PLATFORM</div>
+          <select value={platform} onChange={(e) => { setPlatform(e.target.value); setLinkedId(''); }} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 8 }}>
+            {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <div style={smallLabel}>DATE</div>
+          <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <div style={smallLabel}>AMOUNT (₹)</div>
+          <Field type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <div style={smallLabel}>REFERENCE (optional)</div>
+          <Field value={reference} onChange={(e) => setReference(e.target.value)} placeholder="UTR / transaction ID" />
+          <div style={smallLabel}>{platform === 'Flipkart' ? 'AGAINST INVOICE' : 'AGAINST BATCH (optional)'}</div>
+          <select value={linkedId} onChange={(e) => setLinkedId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 10 }}>
+            <option value="">— Not linked —</option>
+            {(platform === 'Flipkart' ? platformInvoices : platformBatches).map((x) => (
+              platform === 'Flipkart'
+                ? <option key={x.id} value={x.id}>{x.invoiceNumber} ({money(x.amount)})</option>
+                : <option key={x.batch.id} value={x.batch.id}>{x.batch.id} (GRN {money(x.grnValue)})</option>
+            ))}
+          </select>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryBtn onClick={save}>Save payment</PrimaryBtn>
+            <button onClick={() => setLogging(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: RADIUS.md, padding: '10px 16px', fontWeight: 700, fontSize: 12 }}>Cancel</button>
+          </div>
+        </Card>
+      )}
+      {[...salesPayments].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((p) => (
+        <Card key={p.id} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>{p.platform} · {money(p.amount)}</div>
+            <button onClick={() => { if (window.confirm('Delete this payment?')) onDeletePayment(p.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={14} /></button>
+          </div>
+          <div style={{ fontSize: 11, color: MUTED }}>{p.date} {p.reference ? `· ${p.reference}` : ''} · {p.linkedInvoiceId || p.linkedBatchId || 'General'}</div>
+        </Card>
+      ))}
+      {salesPayments.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No payments logged yet.</div></Card>}
+    </div>
+  );
+}
+
 
 function downloadPricingSheet(rows) {
   const sheetRows = rows.map((r) => ({
@@ -3359,473 +4714,9 @@ function PricingTab({ orders, items, purchases, pricingConfig, city, onUpdate })
   );
 }
 
-function ProfitLossDayCard({ day, channel, records, grnReportsForDay, onUploadGrn }) {
-  const [expanded, setExpanded] = useState(false);
-  const [fileError, setFileError] = useState('');
-  const fileInputRef = useRef(null);
 
-  const totalDispatchQty = records.reduce((s, r) => s + (r.dispatchQty || 0), 0);
-  const totalDispatchValue = records.reduce((s, r) => s + (r.cost || 0), 0);
 
-  const handleGrnFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setFileError('');
 
-    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    if (isPdf) {
-      extractPdfText(file)
-        .then((text) => {
-          const rows = parseGrnPdfText(text);
-          if (rows.length === 0) { setFileError('Could not find any GRN rows in this PDF. Try an Excel/CSV export instead.'); return; }
-          onUploadGrn(channel, day.date, file.name, rows);
-        })
-        .catch(() => setFileError('Could not read this PDF. Please try again or use an Excel/CSV export instead.'));
-      e.target.value = '';
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const wb = XLSX.read(evt.target.result, { type: 'array' });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        const rows = parseGrnRows(json);
-        if (rows.length === 0) { setFileError('No rows with a valid code/name and received quantity were found.'); return; }
-        onUploadGrn(channel, day.date, file.name, rows);
-      } catch (err) {
-        setFileError('Could not read this file. Please upload a valid .xlsx, .xls, .csv, or .pdf GRN report.');
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
-  };
-
-  const latestGrn = grnReportsForDay[0];
-  const grnComparison = useMemo(() => {
-    if (!latestGrn) return [];
-    const ours = {};
-    records.forEach((r) => {
-      const k = (r.code || r.articleName).toLowerCase();
-      ours[k] = ours[k] || { articleName: r.articleName, qty: 0, cost: 0, lastPrice: r.finalPricePerPack };
-      ours[k].qty += r.packsDispatched;
-      ours[k].cost += r.cost || 0;
-    });
-    return latestGrn.rows.map((g) => {
-      const k = (g.code || g.name).toLowerCase();
-      const match = ours[k];
-      const ourQty = match?.qty || 0;
-      const ourPrice = match?.lastPrice ?? null;
-      const ourCost = match?.cost || 0;
-      const grnCost = g.qty * g.price;
-      return {
-        key: k, articleName: match?.articleName || g.name || g.code,
-        grnQty: g.qty, ourQty: Math.round(ourQty * 100) / 100, qtyDiff: Math.round((g.qty - ourQty) * 100) / 100,
-        grnPrice: g.price, ourPrice, priceDiff: ourPrice == null ? null : Math.round((g.price - ourPrice) * 100) / 100,
-        costDiff: Math.round((grnCost - ourCost) * 100) / 100,
-      };
-    });
-  }, [latestGrn, records]);
-
-  return (
-    <Card style={{ marginBottom: 10, padding: 0, overflow: 'hidden' }}>
-      <div onClick={() => setExpanded((x) => !x)} style={{ padding: 12, cursor: 'pointer', background: expanded ? '#F6F3EA' : '#fff' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontWeight: 800, fontSize: 14 }}>{day.date}</div>
-          <ChevronRight size={16} color={MUTED} style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />
-        </div>
-        <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-          <div>
-            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>INDENT QTY</div>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{day.totalIndentQty}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>DISPATCHED</div>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{Math.round(totalDispatchQty * 100) / 100}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>VALUE</div>
-            <div style={{ fontWeight: 800, fontSize: 13, color: TOMATO }}>₹{totalDispatchValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-          </div>
-        </div>
-      </div>
-
-      {expanded && (
-        <div style={{ borderTop: `1px solid ${LINE}`, padding: 12 }}>
-          {records.map((r, i) => (
-            <div key={i} style={{ borderTop: i > 0 ? `1px solid ${LINE}` : 'none', padding: '8px 0' }}>
-              <div style={{ fontWeight: 700, fontSize: 13 }}>{r.articleName}</div>
-              <div style={{ fontSize: 11, color: MUTED }}>{r.dispatchQty} {r.unit} · {r.packsDispatched} packs · {r.finalPricePerPack == null ? 'No price yet' : `₹${r.finalPricePerPack.toFixed(2)}/pack`}</div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: r.cost == null ? MUTED : LEAF }}>{r.cost == null ? '—' : `₹${r.cost.toFixed(2)}`}</div>
-            </div>
-          ))}
-          {records.length === 0 && <div style={hint}>No dispatches priced for this day.</div>}
-
-          <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 10, paddingTop: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Upload GRN report — {day.date}</div>
-            <div style={hint}>Upload the channel's Goods Received Note for this day — the Blinkit/Hyperpure PDF works directly, or an Excel/CSV export — to compare against our numbers.</div>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 8 }}
-            >
-              <Upload size={13} /> Upload GRN report
-            </button>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={handleGrnFile} style={{ display: 'none' }} />
-            {fileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: TOMATO, marginBottom: 8 }}><AlertCircle size={12} /> {fileError}</div>}
-            {latestGrn && (
-              <>
-                <div style={{ fontSize: 11, color: MUTED, marginBottom: 6 }}>Comparing: <strong style={{ color: INK }}>{latestGrn.fileName}</strong></div>
-                {grnComparison.map((c) => (
-                  <div key={c.key} style={{ borderTop: `1px solid ${LINE}`, padding: '6px 0' }}>
-                    <div style={{ fontWeight: 700, fontSize: 12 }}>{c.articleName}</div>
-                    <div style={{ fontSize: 11, color: MUTED }}>GRN {c.grnQty} vs Ours {c.ourQty} ({c.qtyDiff > 0 ? '+' : ''}{c.qtyDiff})</div>
-                    <div style={{ fontSize: 11, color: c.costDiff !== 0 ? TOMATO : LEAF, fontWeight: 700 }}>Cost diff: {c.costDiff > 0 ? '+' : ''}₹{c.costDiff.toFixed(2)}</div>
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function IndentBatchCardMobile({ batch, orders, articlesByKey, configByKey, onOpen }) {
-  const batchOrders = useMemo(() => orders.filter((o) => o.batchId === batch.id), [orders, batch.id]);
-  const { totalCost, pricedCount, totalCount } = useMemo(
-    () => computeBatchArticleCosts(batch, orders, articlesByKey, configByKey),
-    [batch, orders, articlesByKey, configByKey]
-  );
-  const totalQty = batchOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0);
-  const fulfilmentDate = batchOrders[0]?.fulfilmentDate || '';
-
-  return (
-    <div onClick={onOpen} style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 14, padding: 14, marginBottom: 10, cursor: 'pointer' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontWeight: 700, fontSize: 13 }}>{batch.platform} — {batch.fileName}</div>
-        <ChevronRight size={15} color={MUTED} />
-      </div>
-      <div style={{ display: 'flex', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>FULFILMENT DATE</div>
-          <div style={{ fontWeight: 700, fontSize: 12 }}>{fulfilmentDate || '—'}</div>
-        </div>
-        <div>
-          <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>ARTICLES</div>
-          <div style={{ fontWeight: 700, fontSize: 12 }}>{totalCount}</div>
-        </div>
-        <div>
-          <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>TOTAL QTY</div>
-          <div style={{ fontWeight: 700, fontSize: 12 }}>{totalQty}</div>
-        </div>
-      </div>
-      <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
-        <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>EXPECTED COST SO FAR</div>
-        <div style={{ fontWeight: 800, fontSize: 14, color: TOMATO }}>
-          ₹{totalCost.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-          <span style={{ fontWeight: 500, color: MUTED, fontSize: 11 }}> ({pricedCount}/{totalCount} priced)</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function IndentBatchDetailMobile({ batch, orders, articlesByKey, configByKey, grnReports, onUploadGrn, onUpdateIndentBatch, onBack }) {
-  const { rows, totalCost, pricedCount, totalCount } = useMemo(
-    () => computeBatchArticleCosts(batch, orders, articlesByKey, configByKey),
-    [batch, orders, articlesByKey, configByKey]
-  );
-  const batchOrders = useMemo(() => orders.filter((o) => o.batchId === batch.id), [orders, batch.id]);
-  const totalQty = batchOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0);
-  const fulfilmentDate = batchOrders[0]?.fulfilmentDate || '';
-
-  const [poValue, setPoValue] = useState(batch.poValue != null ? String(batch.poValue) : '');
-  const [poFileName, setPoFileName] = useState(batch.poFileName || '');
-  const [poFileError, setPoFileError] = useState('');
-  const poFileInputRef = useRef(null);
-
-  const [grnFileError, setGrnFileError] = useState('');
-  const grnFileInputRef = useRef(null);
-
-  const savePoValue = () => onUpdateIndentBatch(batch.id, { poValue: Number(poValue) || 0, poFileName });
-
-  const handlePoFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setPoFileError('');
-    setPoFileName(file.name);
-    e.target.value = '';
-  };
-
-  const projectedProfit = batch.poValue != null ? Math.round((batch.poValue - totalCost) * 100) / 100 : null;
-
-  const batchGrnReports = useMemo(
-    () => grnReports.filter((g) => g.batchId === batch.id).sort((a, b) => (b.uploadedAt || '').localeCompare(a.uploadedAt || '')),
-    [grnReports, batch.id]
-  );
-  const latestGrn = batchGrnReports[0];
-
-  const grnComparison = useMemo(() => {
-    if (!latestGrn) return null;
-    const ownByCode = {};
-    rows.forEach((r) => {
-      const k = (r.code || r.articleName).toLowerCase();
-      ownByCode[k] = ownByCode[k] || { qty: 0, cost: 0 };
-      ownByCode[k].qty += r.packQty;
-      ownByCode[k].cost += r.cost || 0;
-    });
-    let grnValue = 0;
-    latestGrn.rows.forEach((g) => {
-      const k = (g.code || g.name).toLowerCase();
-      if (!ownByCode[k]) return;
-      grnValue += g.qty * g.price;
-    });
-    return { grnValue: Math.round(grnValue * 100) / 100 };
-  }, [latestGrn, rows]);
-
-  const finalProfit = grnComparison ? Math.round((grnComparison.grnValue - totalCost) * 100) / 100 : null;
-
-  const handleGrnFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setGrnFileError('');
-    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    if (isPdf) {
-      extractPdfText(file)
-        .then((text) => {
-          const parsedRows = parseGrnPdfText(text);
-          if (parsedRows.length === 0) { setGrnFileError('Could not find any GRN rows in this PDF.'); return; }
-          onUploadGrn(batch.platform, fulfilmentDate || new Date().toISOString().split('T')[0], file.name, parsedRows, batch.id);
-        })
-        .catch(() => setGrnFileError('Could not read this PDF. Try an Excel/CSV export instead.'));
-      e.target.value = '';
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const wb = XLSX.read(evt.target.result, { type: 'array' });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        const parsedRows = parseGrnRows(json);
-        if (parsedRows.length === 0) { setGrnFileError('No rows with a valid code/name and received quantity were found.'); return; }
-        onUploadGrn(batch.platform, fulfilmentDate || new Date().toISOString().split('T')[0], file.name, parsedRows, batch.id);
-      } catch (err) {
-        setGrnFileError('Could not read this file. Please upload a valid .xlsx, .xls, .csv, or .pdf GRN report.');
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
-  };
-
-  return (
-    <div style={{ padding: 16 }}>
-      <button onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 13, cursor: 'pointer', marginBottom: 12, padding: 0 }}>
-        <ArrowLeft size={15} /> Back to indents
-      </button>
-
-      <Card style={{ marginBottom: 12 }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>{batch.platform} — {batch.fileName}</div>
-        <div style={{ display: 'flex', gap: 14, marginTop: 8, flexWrap: 'wrap' }}>
-          <div><div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>FULFILMENT DATE</div><div style={{ fontWeight: 700, fontSize: 12 }}>{fulfilmentDate || '—'}</div></div>
-          <div><div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>ARTICLES</div><div style={{ fontWeight: 700, fontSize: 12 }}>{totalCount}</div></div>
-          <div><div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>TOTAL QTY</div><div style={{ fontWeight: 700, fontSize: 12 }}>{totalQty}</div></div>
-        </div>
-      </Card>
-
-      <Card style={{ marginBottom: 12 }}>
-        <div style={sectionTitle}>Expected purchase cost ({pricedCount}/{totalCount} priced)</div>
-        {rows.map((r) => (
-          <div key={r.orderId} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{r.articleName}</div>
-            <div style={{ fontSize: 11, color: MUTED }}>
-              {r.code || '—'} · Ordered {r.packQty}{r.shortPacks > 0 ? <span style={{ color: TOMATO }}> · {r.shortPacks} short</span> : ''} · Costed for {r.effectivePacks} · {r.finalPricePerPack == null ? 'No price yet' : `₹${r.finalPricePerPack.toFixed(2)}/pack`}
-            </div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: r.cost == null ? MUTED : LEAF }}>{r.cost == null ? '—' : `₹${r.cost.toFixed(2)}`}</div>
-          </div>
-        ))}
-        {rows.length === 0 && <div style={hint}>No articles in this indent.</div>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10, paddingTop: 10, borderTop: `1px solid ${LINE}` }}>
-          <div style={{ fontWeight: 800, fontSize: 15, color: TOMATO }}>Total so far: ₹{totalCost.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-        </div>
-      </Card>
-
-      <Card style={{ marginBottom: 12 }}>
-        <div style={sectionTitle}>Purchase Order</div>
-        <div style={hint}>Attach the channel's PO for this indent (for your records), and enter its final billing value.</div>
-        <button
-          onClick={() => poFileInputRef.current?.click()}
-          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 8 }}
-        >
-          <Upload size={13} /> {poFileName || 'Attach PO file'}
-        </button>
-        <input ref={poFileInputRef} type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={handlePoFile} style={{ display: 'none' }} />
-        {poFileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: TOMATO, marginBottom: 8 }}><AlertCircle size={12} /> {poFileError}</div>}
-        <div style={smallLabel}>PO value (₹)</div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            type="number"
-            value={poValue}
-            onChange={(e) => setPoValue(e.target.value)}
-            style={{ flex: 1, boxSizing: 'border-box', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 10px' }}
-          />
-          <button onClick={savePoValue} style={{ background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Save</button>
-        </div>
-        {projectedProfit != null && (
-          <div style={{ marginTop: 12, padding: '10px 14px', background: projectedProfit >= 0 ? '#EAF3DE' : '#F3E7E2', borderRadius: 10 }}>
-            <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>PROJECTED {projectedProfit >= 0 ? 'PROFIT' : 'LOSS'}</div>
-            <div style={{ fontWeight: 800, fontSize: 17, color: projectedProfit >= 0 ? LEAF_DARK : TOMATO }}>₹{Math.abs(projectedProfit).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-          </div>
-        )}
-      </Card>
-
-      <Card>
-        <div style={sectionTitle}>GRN report for this indent</div>
-        <div style={hint}>Upload the channel's GRN once received — Blinkit/Hyperpure PDF works directly, or Excel/CSV.</div>
-        <button
-          onClick={() => grnFileInputRef.current?.click()}
-          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 8 }}
-        >
-          <Upload size={13} /> Upload GRN report
-        </button>
-        <input ref={grnFileInputRef} type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={handleGrnFile} style={{ display: 'none' }} />
-        {grnFileError && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: TOMATO, marginBottom: 8 }}><AlertCircle size={12} /> {grnFileError}</div>}
-        {latestGrn && grnComparison && (
-          <>
-            <div style={{ fontSize: 11, color: MUTED, marginBottom: 8 }}>Latest: <strong style={{ color: INK }}>{latestGrn.fileName}</strong> — matched ₹{grnComparison.grnValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-            {finalProfit != null && (
-              <div style={{ padding: '10px 14px', background: finalProfit >= 0 ? '#EAF3DE' : '#F3E7E2', borderRadius: 10 }}>
-                <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>FINAL {finalProfit >= 0 ? 'PROFIT' : 'LOSS'}</div>
-                <div style={{ fontWeight: 800, fontSize: 17, color: finalProfit >= 0 ? LEAF_DARK : TOMATO }}>₹{Math.abs(finalProfit).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-              </div>
-            )}
-          </>
-        )}
-      </Card>
-    </div>
-  );
-}
-
-function ProfitLossTab({ orders, items, purchases, pricingConfig, dispatchLog, grnReports, indentBatches, city, onUploadGrn, onUpdateIndentBatch }) {
-  const [channel, setChannel] = useState(PLATFORMS[0]);
-  const [plView, setPlView] = useState('dispatch'); // 'dispatch' | 'indent'
-  const [selectedBatchId, setSelectedBatchId] = useState(null);
-
-  const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city), [orders, items, purchases, city]);
-  const articlesByKey = useMemo(() => { const map = {}; articles.forEach((a) => { map[a.key] = a; }); return map; }, [articles]);
-  const configByKey = useMemo(() => { const map = {}; pricingConfig.forEach((c) => { map[c.id] = c; }); return map; }, [pricingConfig]);
-
-  const records = useMemo(() => {
-    const out = [];
-    dispatchLog.forEach((log) => {
-      (log.items || []).forEach((it) => {
-        const order = orders.find((o) => o.id === it.orderId);
-        const platform = it.platform || order?.platform;
-        const baseProduct = it.baseProduct || order?.product;
-        const packSize = it.packSize || order?.packSize;
-        const packUnit = it.packUnit || order?.packUnit;
-        if (!platform || !baseProduct || !packSize || !packUnit) return;
-        const key = `${city}__${baseProduct}__${platform}__${packSize}__${packUnit}`;
-        const legacyKey = `${baseProduct}__${platform}__${packSize}__${packUnit}`;
-        const article = articlesByKey[key];
-        const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[legacyKey]) : null;
-        const packsDispatched = Math.round((it.dispatchQty / packSize) * 100) / 100;
-        const cost = finalPricePerPack == null ? null : Math.round(packsDispatched * finalPricePerPack * 100) / 100;
-        out.push({ date: log.date || '—', channel: platform, articleName: it.product, code: article?.code || '', dispatchQty: it.dispatchQty, unit: it.unit, packsDispatched, finalPricePerPack, cost });
-      });
-    });
-    return out;
-  }, [dispatchLog, orders, articlesByKey, configByKey, city]);
-
-  const indentQtyByDate = useMemo(() => {
-    const map = {};
-    orders.filter((o) => o.platform === channel && o.fulfilmentDate).forEach((o) => { map[o.fulfilmentDate] = (map[o.fulfilmentDate] || 0) + o.qty; });
-    return map;
-  }, [orders, channel]);
-
-  const channelRecords = records.filter((r) => r.channel === channel);
-  const days = useMemo(() => {
-    const dateSet = new Set([...channelRecords.map((r) => r.date), ...Object.keys(indentQtyByDate)]);
-    return Array.from(dateSet).sort((a, b) => b.localeCompare(a)).map((date) => ({
-      date, totalIndentQty: Math.round((indentQtyByDate[date] || 0) * 100) / 100, records: channelRecords.filter((r) => r.date === date),
-    }));
-  }, [channelRecords, indentQtyByDate]);
-
-  const channelTotalValue = channelRecords.reduce((s, r) => s + (r.cost || 0), 0);
-
-  const channelBatches = useMemo(() => indentBatches.filter((b) => b.platform === channel), [indentBatches, channel]);
-
-  const selectedBatch = selectedBatchId ? indentBatches.find((b) => b.id === selectedBatchId) : null;
-  if (selectedBatch) {
-    return (
-      <IndentBatchDetailMobile
-        batch={selectedBatch}
-        orders={orders}
-        articlesByKey={articlesByKey}
-        configByKey={configByKey}
-        grnReports={grnReports}
-        onUploadGrn={onUploadGrn}
-        onUpdateIndentBatch={onUpdateIndentBatch}
-        onBack={() => setSelectedBatchId(null)}
-      />
-    );
-  }
-
-  return (
-    <div style={{ padding: 16 }}>
-      <Card style={{ marginBottom: 12 }}>
-        <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><TrendingUp size={15} /> Profit &amp; Loss</div>
-        <div style={hint}>
-          {plView === 'dispatch'
-            ? "Each day shows total indent qty, total dispatched, and total dispatch value (from Pricing). Tap a day to see the breakdown and upload that day's GRN report."
-            : "One card per uploaded indent — expected cost fills in as articles get priced. Tap a card to see the breakdown, add the PO value, and upload its GRN once received."}
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 8 }}>
-          {PLATFORMS.map((p) => <Chip key={p} label={p} active={channel === p} onClick={() => setChannel(p)} />)}
-        </div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <Chip label="By dispatch day" active={plView === 'dispatch'} onClick={() => setPlView('dispatch')} />
-          <Chip label="By indent" active={plView === 'indent'} onClick={() => setPlView('indent')} />
-        </div>
-        {plView === 'dispatch' && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: MUTED, fontWeight: 700 }}>{channel.toUpperCase()} TOTAL VALUE</span>
-            <span style={{ fontWeight: 800, fontSize: 16, color: TOMATO }}>₹{channelTotalValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
-          </div>
-        )}
-      </Card>
-
-      {plView === 'dispatch' ? (
-        <>
-          {days.map((day) => (
-            <ProfitLossDayCard
-              key={day.date} day={day} channel={channel} records={day.records}
-              grnReportsForDay={grnReports.filter((g) => g.channel === channel && g.date === day.date).sort((a, b) => (b.uploadedAt || '').localeCompare(a.uploadedAt || ''))}
-              onUploadGrn={onUploadGrn}
-            />
-          ))}
-          {days.length === 0 && <div style={hint}>No {channel} indents or dispatches yet.</div>}
-        </>
-      ) : (
-        <>
-          {channelBatches.map((b) => (
-            <IndentBatchCardMobile
-              key={b.id}
-              batch={b}
-              orders={orders}
-              articlesByKey={articlesByKey}
-              configByKey={configByKey}
-              onOpen={() => setSelectedBatchId(b.id)}
-            />
-          ))}
-          {channelBatches.length === 0 && <div style={hint}>No {channel} indents uploaded yet.</div>}
-        </>
-      )}
-    </div>
-  );
-}
 
 function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdatePackedQty }) {
   const [platformFilter, setPlatformFilter] = usePersistedState('fnv_packaging_platform', 'All');
@@ -4509,7 +5400,11 @@ function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, on
                 {!inUse && <button onClick={() => onDeleteRole(r.id)} style={{ background: 'none', border: 'none', color: TOMATO, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Delete</button>}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', marginTop: 6 }}>
-                {PERMISSION_SECTIONS.map((s) => <Chip key={s.key} label={s.label} active={hasPermission(r.permissions, s.key)} onClick={() => onToggleRolePermission(r.id, s.key, !hasPermission(r.permissions, s.key))} />)}
+                {PERMISSION_SECTIONS.map((s) => {
+                  const isSensitive = ['staff', 'advanceindent'].includes(s.key);
+                  const active = isSensitive ? hasSensitivePermission(r.permissions, s.key) : hasPermission(r.permissions, s.key);
+                  return <Chip key={s.key} label={s.label} active={active} onClick={() => onToggleRolePermission(r.id, s.key, !active)} />;
+                })}
               </div>
             </div>
           );
