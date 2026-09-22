@@ -758,7 +758,7 @@ export default function FnvMobilePreview() {
               onExcludeOldFromPurchase={excludeOldOrdersFromPurchase}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} />}
           {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} onReset={resetStockCounts} />}
           {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
           {tab === 'sales' && (
@@ -1575,6 +1575,31 @@ function hasSensitivePermission(permissions, key) {
   return !!permissions && permissions[key] === true;
 }
 
+// Downloads a vendor's ledger as CSV via a direct Blob download — reliable
+// inside the app's Android WebView, unlike a print-window approach.
+function downloadVendorLedgerCsv(vendorName, groups, onlyOutstanding) {
+  const rows = [];
+  groups.forEach((g) => {
+    (onlyOutstanding ? g.due : g.entries).forEach((e) => {
+      const status = e.payment === 'credit' ? (e.settled ? 'Paid (was credit)' : 'Outstanding') : `Paid (${e.payment})`;
+      rows.push([e.date || '', e.itemName || '', e.qty ?? '', e.unit || '', e.unitPrice ?? '', e.total ?? '', status]);
+    });
+  });
+  const header = ['Date', 'Item', 'Qty', 'Unit', 'Unit Price', 'Total', 'Status'];
+  const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const csv = [header, ...rows].map((r) => r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const safeName = vendorName.replace(/[^a-z0-9]+/gi, '_');
+  a.download = `${safeName}_ledger_${onlyOutstanding ? 'outstanding' : 'complete'}_${new Date().toISOString().split('T')[0]}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function generateOrderImage(order) {
   const canvas = document.createElement('canvas');
   const ROW_H = 44, HEADER_H = 72, TITLE_H = 52, PAD = 24;
@@ -1729,6 +1754,7 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
   const [vendorSearch, setVendorSearch] = useState('');
   const [openVendorId, setOpenVendorId] = useState(null);
   const [ledgerFilter, setLedgerFilter] = useState('due'); // 'due' | 'all'
+  const [showLedgerDownload, setShowLedgerDownload] = useState(false);
   const [selectedDates, setSelectedDates] = useState([]);
   const [showItems, setShowItems] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -1870,7 +1896,8 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
   if (openVendor) {
     const vendorDueEntries = dueEntriesOf(openVendor.id);
     const vendorDue = sumEffective(vendorDueEntries);
-    const groups = ledgerGroupsOf(openVendor.id).filter((g) => ledgerFilter === 'all' || g.due.length > 0);
+    const allLedgerGroups = ledgerGroupsOf(openVendor.id); // unfiltered, for download
+    const groups = allLedgerGroups.filter((g) => ledgerFilter === 'all' || g.due.length > 0);
     const selectedEntries = groups.filter((g) => selectedDates.includes(g.date)).flatMap((g) => g.due);
     const selectedDays = groups.filter((g) => selectedDates.includes(g.date) && g.due.length > 0).length;
 
@@ -1907,6 +1934,29 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
             <Chip label="All entries" active={ledgerFilter === 'all'} onClick={() => setLedgerFilter('all')} />
           </div>
           <div style={hint}>Tick the days you want to pay together, or tap a day to view and edit its items.</div>
+
+          <button
+            onClick={() => setShowLedgerDownload((x) => !x)}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%', boxSizing: 'border-box', background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, marginTop: 8, marginBottom: showLedgerDownload ? 8 : 0 }}
+          >
+            <Download size={13} /> Download ledger
+          </button>
+          {showLedgerDownload && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <button
+                onClick={() => { downloadVendorLedgerCsv(openVendor.name, allLedgerGroups, false); setShowLedgerDownload(false); }}
+                style={{ textAlign: 'left', background: '#F6F3EA', border: 'none', borderRadius: 8, padding: '9px 10px', fontSize: 12 }}
+              >
+                <span style={{ fontWeight: 700 }}>Complete ledger</span> — <span style={{ color: MUTED }}>every entry, date-wise</span>
+              </button>
+              <button
+                onClick={() => { downloadVendorLedgerCsv(openVendor.name, allLedgerGroups, true); setShowLedgerDownload(false); }}
+                style={{ textAlign: 'left', background: '#F6F3EA', border: 'none', borderRadius: 8, padding: '9px 10px', fontSize: 12 }}
+              >
+                <span style={{ fontWeight: 700 }}>Only unpaid</span> — <span style={{ color: MUTED }}>just what's outstanding</span>
+              </button>
+            </div>
+          )}
 
           {groups.map((g) => {
             const gKey = `${openVendor.id}-${g.date}`;
@@ -2836,13 +2886,14 @@ function OrdersListCard({ orders, indentBatches }) {
 // CUT is intentionally not listed: processed (CUT) items are never bought directly — only their raw ingredients are.
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS'];
 
-function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases }) {
+function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds }) {
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
   const [fulfilmentDateFilter, setFulfilmentDateFilter] = usePersistedState('fnv_purchase_fulfilmentdate', 'ALL'); // 'ALL' = All Purchase
   const [itemSearch, setItemSearch] = useState('');
   const [purchasedDate, setPurchasedDate] = useState('');
+  const [confirmingPurchaseReset, setConfirmingPurchaseReset] = useState(false);
   const [deleteBeforeDate, setDeleteBeforeDate] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState(null);
@@ -3004,6 +3055,15 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   }, [orders, recipes, items, allItems, indentBatches, fulfilmentDateFilter]);
   const neededByProduct = neededData.map;
   const cutWithoutRecipe = neededData.missing;
+
+  const allPurchaseNeedOrderIds = useMemo(() => {
+    const releasedBatchIds = new Set(indentBatches.filter((b) => b.released).map((b) => b.id));
+    return orders
+      .filter((o) => o.status !== 'dispatched')
+      .filter((o) => !o.excludeFromPurchase)
+      .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
+      .map((o) => o.id);
+  }, [orders, indentBatches]);
 
   // "Available stock" = latest nightly stock count (if any) as baseline, plus every
   // actual completed purchase made since — "requirement" rows (from released indents /
@@ -3389,7 +3449,32 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
         >
           Purchased ({allPurchasedCount})
         </button>
+        <button
+          onClick={() => setConfirmingPurchaseReset((x) => !x)}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: TOMATO, border: `1px solid ${TOMATO}`, borderRadius: 10, padding: '9px 0', fontWeight: 700, fontSize: 12, cursor: 'pointer', marginTop: 8 }}
+        >
+          <RotateCcw size={13} /> Reset items needing purchase
+        </button>
       </Card>
+
+      {confirmingPurchaseReset && (
+        <Card style={{ border: `1px solid ${TOMATO}`, background: '#FCF1EC', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Reset "Items needing purchase"?</div>
+          <div style={{ fontSize: 11, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
+            Marks every item on this list as handled — <strong>all {allPurchaseNeedOrderIds.length} pending order(s)</strong>, not just what your filters show. Doesn't touch what's already bought or dispatched; a new indent brings an item back if it's still needed. Forgot something? Log it directly from Vendors.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => { onResetPurchaseNeeds(allPurchaseNeedOrderIds); setConfirmingPurchaseReset(false); }}
+              disabled={!allPurchaseNeedOrderIds.length}
+              style={{ flex: 1, background: allPurchaseNeedOrderIds.length ? TOMATO : '#E5E1D4', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}
+            >
+              Reset all {allPurchaseNeedOrderIds.length > 0 ? allPurchaseNeedOrderIds.length : ''}
+            </button>
+            <button onClick={() => setConfirmingPurchaseReset(false)} style={{ flex: 1, background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}>Cancel</button>
+          </div>
+        </Card>
+      )}
 
       <Card>
         {Object.keys(cutWithoutRecipe).length > 0 && (
@@ -3862,6 +3947,12 @@ function parsePoSheetRows(rows) {
   return out;
 }
 
+function extractPoNumber(rawText, fileName) {
+  const m = rawText && String(rawText).match(/PO\s*Number\s*:?\s*([A-Za-z0-9-]+)/i);
+  if (m) return m[1];
+  return String(fileName || '').replace(/\.(xlsx|xls|csv|pdf)$/i, '').replace(/^purchase[_\s-]*order[_\s-]*/i, '').trim() || fileName || '';
+}
+
 function parsePoPdfText(text) {
   const flat = text.replace(/\s+/g, ' ').trim();
   const pattern = /(\d{7,9}) (.+?) (\d{8}) (\d+\.\d{2}) (\d+\.\d{2}) (\d+) (\d+\.\d{2}) .*?(\d+)% (\d+\.\d{2}) (\d+\.\d{2})/g;
@@ -4102,6 +4193,7 @@ function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, i
   const batchFinancials = useMemo(() => indentBatches.filter((b) => !b.isAdvance).map((b) => {
     const costs = computeBatchArticleCosts(b, orders, articlesByKey, configByKey);
     const grn = grnValueForBatch(b.id, grnReports, items, articlesByKey, configByKey, city, b.platform);
+    const fulfilmentDate = orders.find((o) => o.batchId === b.id && o.fulfilmentDate)?.fulfilmentDate || '';
     // A batch can have more than one PO — the channel sometimes tops up an
     // indent with a second PO rather than reissuing the whole thing — so these
     // accumulate the same way GRN reports do, never replacing an earlier one.
@@ -4114,6 +4206,7 @@ function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, i
       : (b.poValue != null ? Number(b.poValue) : null);
     return {
       batch: b,
+      fulfilmentDate,
       indentCost: costs.totalCost,
       costRows: costs.rows,
       pricedCount: costs.pricedCount,
@@ -4236,23 +4329,29 @@ function SalesBatchesMobile({ batchFinancials, onOpen }) {
   return (
     <div>
       {sorted.length === 0 && <Card><div style={{ fontSize: 12, color: MUTED }}>No indent batches yet.</div></Card>}
-      {sorted.map((bf) => (
-        <Card key={bf.batch.id} style={{ marginBottom: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-            <div>
-              <div style={{ fontFamily: 'monospace', fontSize: 11, color: MUTED }}>{bf.batch.id}</div>
-              <div style={{ fontWeight: 700, fontSize: 13 }}>{bf.batch.platform}</div>
+      {sorted.map((bf) => {
+        const poNumbers = bf.poReports.map((r) => r.poNumber).filter(Boolean);
+        return (
+          <Card key={bf.batch.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontFamily: 'monospace', fontSize: 11, color: MUTED }}>{bf.batch.id}</div>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{bf.batch.platform}</div>
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{bf.fulfilmentDate ? `Fulfil ${bf.fulfilmentDate}` : 'No fulfilment date'}</div>
+              </div>
+              <button onClick={() => onOpen(bf.batch.id)} style={{ background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700 }}>Open ›</button>
             </div>
-            <button onClick={() => onOpen(bf.batch.id)} style={{ background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700 }}>Open ›</button>
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11 }}>
-            <span style={{ color: MUTED }}>Cost <b style={{ color: INK }}>{money(bf.indentCost)}</b></span>
-            <span style={{ color: MUTED }}>PO <b style={{ color: INK }}>{bf.poValue == null ? '—' : money(bf.poValue)}</b></span>
-            <span style={{ color: MUTED }}>GRN <b style={{ color: INK }}>{bf.hasGrn ? money(bf.grnValue) : '—'}</b></span>
-            <span style={{ color: MUTED }}>Net <b style={{ color: bf.netProfit == null ? INK : (bf.netProfit >= 0 ? LEAF : TOMATO) }}>{bf.netProfit == null ? '—' : money(bf.netProfit)}</b></span>
-          </div>
-        </Card>
-      ))}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11 }}>
+              <span style={{ color: MUTED }}>Cost <b style={{ color: INK }}>{money(bf.indentCost)}</b></span>
+              <span style={{ color: MUTED }}>PO <b style={{ color: INK }}>{bf.poValue == null ? '—' : money(bf.poValue)}</b></span>
+              <span style={{ color: MUTED }}>GRN <b style={{ color: INK }}>{bf.hasGrn ? money(bf.grnValue) : '—'}</b></span>
+            </div>
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 6, fontFamily: 'monospace' }}>
+              {poNumbers.length ? `PO#: ${poNumbers.join(', ')}` : <span style={{ color: AMBER, fontFamily: 'inherit' }}>No PO yet</span>}
+            </div>
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -4269,21 +4368,21 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
     const file = e.target.files[0];
     if (!file) return;
     setPoError('');
-    const finish = (rows, name) => {
+    const finish = (rows, name, rawText) => {
       if (!rows.length) { setPoError('Could not find any priced article rows in this PO.'); return; }
-      const newReport = { id: `PO-${Date.now().toString(36).toUpperCase()}`, fileName: name, rows };
+      const newReport = { id: `PO-${Date.now().toString(36).toUpperCase()}`, fileName: name, rows, poNumber: extractPoNumber(rawText, name) };
       onUpdateIndentBatch(batch.id, { poReports: [...bf.poReports, newReport] });
     };
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     if (isPdf) {
-      extractPdfText(file).then((t) => finish(parsePoPdfText(t), file.name)).catch(() => setPoError('Could not read this PDF.'));
+      extractPdfText(file).then((t) => finish(parsePoPdfText(t), file.name, t)).catch(() => setPoError('Could not read this PDF.'));
       e.target.value = ''; return;
     }
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
         const wb = XLSX.read(ev.target.result, { type: 'array' });
-        finish(parsePoSheetRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })), file.name);
+        finish(parsePoSheetRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })), file.name, null);
       } catch (err) { setPoError('Could not read this file — use .xlsx, .xls, .csv or .pdf.'); }
     };
     reader.readAsArrayBuffer(file);
