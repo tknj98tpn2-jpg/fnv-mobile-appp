@@ -500,6 +500,18 @@ export default function FnvMobilePreview() {
     ids.forEach((id) => b.update(doc(db, 'orders', id), { excludeFromPurchase: true }));
     b.commit();
   };
+  const restoreExcludedOrders = (ids) => {
+    if (!ids.length) return;
+    const b = writeBatch(db);
+    ids.forEach((id) => b.update(doc(db, 'orders', id), { excludeFromPurchase: false }));
+    b.commit();
+  };
+  const resetOldOrders = (orderIds, batchIds) => {
+    const b = writeBatch(db);
+    orderIds.forEach((id) => b.delete(doc(db, 'orders', id)));
+    batchIds.forEach((id) => b.delete(doc(db, 'indentBatches', id)));
+    b.commit();
+  };
   const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p, city: effectiveCity });
   const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: effectiveCity })); b.commit(); };
   const removePurchasesByIds = (ids) => { const b = writeBatch(db); ids.forEach((id) => b.delete(doc(db,'purchases',id))); b.commit(); };
@@ -756,9 +768,10 @@ export default function FnvMobilePreview() {
               onCreateIndentBatch={createIndentBatch} onToggleReleaseBatch={toggleReleaseBatch}
               canAdvanceIndent={hasSensitivePermission(currentRole?.permissions, 'advanceindent')}
               onExcludeOldFromPurchase={excludeOldOrdersFromPurchase}
+              onResetOldOrders={resetOldOrders}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} />}
           {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} onReset={resetStockCounts} />}
           {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
           {tab === 'sales' && (
@@ -2475,8 +2488,9 @@ function CutProcessTab({ items, recipes, orders, onAddRecipe, onDeleteRecipe, on
 }
 
 // ---------- Orders ----------
-function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch }) {
+function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch, onDeleteBatch }) {
   const [purchaseDate, setPurchaseDate] = useState(b.purchaseDate || '');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const batchOrders = useMemo(() => orders.filter((o) => o.batchId === b.id), [orders, b.id]);
   const articleCount = new Set(batchOrders.map((o) => o.articleName || o.product)).size;
@@ -2485,7 +2499,19 @@ function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch }) {
 
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: '10px 0' }}>
-      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{b.platform} indent — {b.fileName}</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>{b.platform} indent — {b.fileName}</div>
+        {!confirmingDelete ? (
+          <button onClick={() => setConfirmingDelete(true)} style={{ display: 'flex', alignItems: 'center', gap: 3, background: 'none', border: 'none', color: TOMATO, fontSize: 10, fontWeight: 700, flexShrink: 0, padding: 2 }}>
+            <Trash2 size={11} /> Delete
+          </button>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <button onClick={() => onDeleteBatch(b.id)} style={{ background: TOMATO, color: '#fff', border: 'none', borderRadius: 5, padding: '3px 6px', fontSize: 10, fontWeight: 700 }}>Yes</button>
+            <button onClick={() => setConfirmingDelete(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 5, padding: '3px 6px', fontSize: 10, fontWeight: 700 }}>No</button>
+          </div>
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 12, marginBottom: 10 }}>
         <div>
           <div style={{ fontSize: 9, color: MUTED, fontWeight: 700 }}>ARTICLE QTY</div>
@@ -2520,7 +2546,7 @@ function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch }) {
   );
 }
 
-function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch, canAdvanceIndent, onExcludeOldFromPurchase }) {
+function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch, canAdvanceIndent, onExcludeOldFromPurchase, onResetOldOrders }) {
   const [platform, setPlatform] = useState('Blinkit');
   const [product, setProduct] = useState('');
   const [qty, setQty] = useState('');
@@ -2529,6 +2555,8 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   const [indentPlatform, setIndentPlatform] = useState('Blinkit');
   const [indentFulfilmentDate, setIndentFulfilmentDate] = useState('');
   const [pendingIndent, setPendingIndent] = useState(null); // { platform, fileName, rows, fulfilmentDate, isAdvance }
+  const [confirmingOrdersReset, setConfirmingOrdersReset] = useState(false);
+  const [resetBeforeDate, setResetBeforeDate] = useState('');
   const advanceFileRef = useRef(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState(new Set());
   const [fileError, setFileError] = useState('');
@@ -2668,9 +2696,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
       // A regular (non-advance) indent means today's real requirement has
       // arrived — clear old, still-open orders out of the purchase list so a
       // mandi-unavailable item from a past indent doesn't linger forever.
+      // Must stay scoped to the same platform — Blinkit and Flipkart run
+      // independent indent cycles, so one platform's upload must never clear
+      // the other's still-open needs.
       if (!pendingIndent.isAdvance) {
         const staleIds = orders
-          .filter((o) => o.batchId && o.batchId !== batchId && o.status !== 'dispatched' && !o.isAdvance && !o.excludeFromPurchase)
+          .filter((o) => o.batchId && o.batchId !== batchId && o.platform === pendingIndent.platform && o.status !== 'dispatched' && !o.isAdvance && !o.excludeFromPurchase)
           .map((o) => o.id);
         onExcludeOldFromPurchase(staleIds);
       }
@@ -2680,12 +2711,64 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     setSelectedRowKeys(new Set(remaining.filter((r) => selectedRowKeys.has(r.key)).map((r) => r.key)));
   };
 
+  const batchesToReset = resetBeforeDate ? indentBatches.filter((b) => b.purchaseDate && b.purchaseDate < resetBeforeDate) : [];
+  const resetBatchIds = batchesToReset.map((b) => b.id);
+  const ordersToReset = resetBeforeDate ? orders.filter((o) => resetBatchIds.includes(o.batchId)) : [];
+  const confirmOrdersReset = () => {
+    onResetOldOrders(ordersToReset.map((o) => o.id), resetBatchIds);
+    setConfirmingOrdersReset(false);
+    setResetBeforeDate('');
+  };
+
   return (
     <div style={{ padding: 16 }}>
       {indentBatches.length > 0 && (
         <Card style={{ marginBottom: 14 }}>
-          <div style={sectionTitle}>Release to Purchase Manager</div>
-          {indentBatches.map((b) => <ReleaseBatchCard key={b.id} batch={b} orders={orders} onToggleReleaseBatch={onToggleReleaseBatch} />)}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <div style={{ ...sectionTitle, marginBottom: 0 }}>Release to Purchase Manager</div>
+            <button
+              onClick={() => setConfirmingOrdersReset((x) => !x)}
+              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: TOMATO, border: `1px solid ${TOMATO}`, borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 700 }}
+            >
+              <RotateCcw size={12} /> Reset
+            </button>
+          </div>
+          {confirmingOrdersReset && (
+            <div style={{ border: `1px solid ${TOMATO}`, background: '#FCF1EC', borderRadius: 10, padding: 12, marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 6 }}>Delete old orders and indents</div>
+              <div style={{ fontSize: 11, color: MUTED, marginBottom: 6 }}>Delete everything with a purchase date before:</div>
+              <Field type="date" value={resetBeforeDate} onChange={(e) => setResetBeforeDate(e.target.value)} style={{ marginBottom: 8 }} />
+              {resetBeforeDate && (
+                <div style={{ fontSize: 11, color: batchesToReset.length ? INK : MUTED, marginBottom: 8 }}>
+                  {batchesToReset.length === 0
+                    ? 'No indents match this — nothing would be deleted.'
+                    : `Will permanently delete ${batchesToReset.length} indent(s) and ${ordersToReset.length} order(s).`}
+                </div>
+              )}
+              <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
+                Removes the orders and their indent (PO data included) for good. Anything not yet packed/dispatched drops out of Packaging/Dispatch and stops counting toward "needs purchase" — permanently. Also removes it from Sales → Indents &amp; P&amp;L. Doesn't touch Purchases, Vendor Ledger, or Stock Count.
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => { if (batchesToReset.length) confirmOrdersReset(); }}
+                  disabled={!batchesToReset.length}
+                  style={{ flex: 1, background: batchesToReset.length ? TOMATO : '#E5E1D4', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}
+                >
+                  Delete {batchesToReset.length > 0 ? batchesToReset.length : ''}
+                </button>
+                <button onClick={() => { setConfirmingOrdersReset(false); setResetBeforeDate(''); }} style={{ flex: 1, background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {indentBatches.map((b) => (
+            <ReleaseBatchCard
+              key={b.id}
+              batch={b}
+              orders={orders}
+              onToggleReleaseBatch={onToggleReleaseBatch}
+              onDeleteBatch={(batchId) => onResetOldOrders(orders.filter((o) => o.batchId === batchId).map((o) => o.id), [batchId])}
+            />
+          ))}
         </Card>
       )}
 
@@ -2886,7 +2969,7 @@ function OrdersListCard({ orders, indentBatches }) {
 // CUT is intentionally not listed: processed (CUT) items are never bought directly — only their raw ingredients are.
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS'];
 
-function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds }) {
+function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds, onRestoreExcluded }) {
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
@@ -3064,6 +3147,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
       .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
       .map((o) => o.id);
   }, [orders, indentBatches]);
+  const excludedOrderIds = useMemo(() => orders.filter((o) => o.excludeFromPurchase && o.status !== 'dispatched').map((o) => o.id), [orders]);
 
   // "Available stock" = latest nightly stock count (if any) as baseline, plus every
   // actual completed purchase made since — "requirement" rows (from released indents /
@@ -3455,6 +3539,14 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
         >
           <RotateCcw size={13} /> Reset items needing purchase
         </button>
+        {excludedOrderIds.length > 0 && (
+          <button
+            onClick={() => onRestoreExcluded(excludedOrderIds)}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 10, padding: '9px 0', fontWeight: 700, fontSize: 12, cursor: 'pointer', marginTop: 8 }}
+          >
+            Restore {excludedOrderIds.length} hidden
+          </button>
+        )}
       </Card>
 
       {confirmingPurchaseReset && (
