@@ -9,7 +9,7 @@ import {
   Menu, X, LayoutDashboard, Tag, Scissors, ClipboardList, ShoppingBag,
   PackageCheck, Truck, Truck as TruckIcon, Boxes, Users, Upload, FileSpreadsheet, AlertCircle,
   Trash2, Pencil, Plus, ChevronRight, ArrowLeft, Download, Store,
-  Search, Layers, IndianRupee, UserCheck, Wallet,
+  Search, Layers, IndianRupee, UserCheck, Wallet, RotateCcw,
 } from 'lucide-react';
 
 // ── Firebase — same project as the web admin panel, so data stays in sync ──
@@ -118,8 +118,8 @@ const SEED_PURCHASES = [];
 const SEED_RECIPES = [];
 
 const SEED_ROLES = [
-  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, advanceindent: true, purchase: true, stockcount: true, spoilage: true, pricing: true, sales: true, staff: true, attendance: true, packaging: true, dispatch: true, crates: true, users: true } },
-  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, advanceindent: false, purchase: false, stockcount: true, spoilage: false, pricing: false, sales: false, staff: false, attendance: true, packaging: true, dispatch: true, crates: true, users: false } },
+  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, advanceindent: true, purchase: true, stockcount: true, pricing: true, sales: true, staff: true, attendance: true, packaging: true, dispatch: true, crates: true, users: true } },
+  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, advanceindent: false, purchase: false, stockcount: true, pricing: false, sales: false, staff: false, attendance: true, packaging: true, dispatch: true, crates: true, users: false } },
 ];
 
 const SEED_USERS = [];
@@ -142,7 +142,6 @@ const NAV = [
   { key: 'orders', label: 'Orders', icon: ClipboardList },
   { key: 'purchase', label: 'Purchases', icon: ShoppingBag },
   { key: 'stockcount', label: 'Stock Count', icon: Layers },
-  { key: 'spoilage', label: 'Spoilage & Surplus', icon: AlertCircle },
   { key: 'pricing', label: 'Pricing', icon: IndianRupee },
   { key: 'sales', label: 'Sales', icon: Wallet },
   { key: 'packaging', label: 'Packaging', icon: PackageCheck },
@@ -335,7 +334,6 @@ export default function FnvMobilePreview() {
   const [indentBatches, setIndentBatches] = useState([]);
   const [packingProgress, setPackingProgress] = useState({}); // { [targetKey]: packedPacks }
   const [stockCounts, setStockCounts] = useState([]); // nightly closing-stock entries, one per item per date
-  const [spoilageSurplus, setSpoilageSurplus] = useState([]); // auto-computed when a stock count differs from the expected (purchased minus dispatched) remaining stock
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
   const [salesInvoices, setSalesInvoices] = useState([]);
@@ -366,8 +364,8 @@ export default function FnvMobilePreview() {
       setDbReady(true);
     })();
 
-    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','spoilageSurplus','pricingConfig','grnReports','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
-    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, spoilageSurplus: setSpoilageSurplus, pricingConfig: setPricingConfig, grnReports: setGrnReports, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
+    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','pricingConfig','grnReports','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
+    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, pricingConfig: setPricingConfig, grnReports: setGrnReports, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
 
     const unsubs = cols.map((col) =>
       onSnapshot(collection(db, col), (snap) => {
@@ -505,23 +503,15 @@ export default function FnvMobilePreview() {
   const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p, city: effectiveCity });
   const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: effectiveCity })); b.commit(); };
   const removePurchasesByIds = (ids) => { const b = writeBatch(db); ids.forEach((id) => b.delete(doc(db,'purchases',id))); b.commit(); };
-  // expectedQty is the system-computed remaining stock (previous count + purchases
-  // − dispatched, since the last count) — passed in from the tab so this stays a
-  // pure write function. Any gap between what's actually counted and that expected
-  // figure is logged as spoilage (counted less) or surplus (counted more).
-  const recordStockCount = (itemId, itemName, unit, date, closingQty, expectedQty, unitPrice) => {
-    const actual = Number(closingQty) || 0;
-    fbSetDoc('stockCounts', `${itemId}__${date}`, { id: `${itemId}__${date}`, itemId, itemName, unit, date, closingQty: actual, city: effectiveCity });
-    const ssId = `${itemId}__${date}`;
-    const diff = Math.round((actual - (Number(expectedQty) || 0)) * 100) / 100;
-    if (Math.abs(diff) < 0.005) {
-      fbDelete('spoilageSurplus', ssId);
-    } else {
-      const type = diff < 0 ? 'spoilage' : 'surplus';
-      const qty = Math.abs(diff);
-      const value = Math.round(qty * (Number(unitPrice) || 0) * 100) / 100;
-      fbSetDoc('spoilageSurplus', ssId, { id: ssId, itemId, itemName, unit, date, expectedQty: Math.round((Number(expectedQty) || 0) * 100) / 100, actualQty: actual, diffQty: diff, type, qty, unitPrice: Number(unitPrice) || 0, value, city: effectiveCity });
-    }
+  const recordStockCount = (itemId, itemName, unit, date, closingQty) => {
+    fbSetDoc('stockCounts', `${itemId}__${date}`, { id: `${itemId}__${date}`, itemId, itemName, unit, date, closingQty: Number(closingQty) || 0, city: effectiveCity });
+  };
+  const resetStockCounts = (itemList, date) => {
+    const b = writeBatch(db);
+    itemList.forEach((it) => {
+      b.set(doc(db, 'stockCounts', `${it.id}__${date}`), { id: `${it.id}__${date}`, itemId: it.id, itemName: it.name, unit: it.uom, date, closingQty: 0, city: effectiveCity });
+    });
+    b.commit();
   };
   // legacyKey (optional): the pre-city-scoping shared key this article used to save
   // under. The first time a city edits this article under its own new city-scoped
@@ -687,7 +677,6 @@ export default function FnvMobilePreview() {
   const cityPurchases = purchases.filter((p) => (p.city || CITIES[0]) === effectiveCity);
   const cityIndentBatches = indentBatches.filter((b) => (b.city || CITIES[0]) === effectiveCity);
   const cityStockCounts = stockCounts.filter((sc) => (sc.city || CITIES[0]) === effectiveCity);
-  const citySpoilageSurplus = spoilageSurplus.filter((s) => (s.city || CITIES[0]) === effectiveCity);
   const cityDispatchLog = dispatchLog.filter((d) => (d.city || CITIES[0]) === effectiveCity);
   const cityCrates = cratesByCity[effectiveCity] || { crates: 0, boxes: 0 };
   const cityCrateLog = crateLog.filter((l) => (l.city || CITIES[0]) === effectiveCity);
@@ -769,9 +758,8 @@ export default function FnvMobilePreview() {
               onExcludeOldFromPurchase={excludeOldOrdersFromPurchase}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} />}
-          {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} />}
-          {tab === 'spoilage' && <SpoilageSurplusTab spoilageSurplus={citySpoilageSurplus} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} />}
+          {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} onReset={resetStockCounts} />}
           {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
           {tab === 'sales' && (
             <SalesTabMobile
@@ -2848,13 +2836,15 @@ function OrdersListCard({ orders, indentBatches }) {
 // CUT is intentionally not listed: processed (CUT) items are never bought directly — only their raw ingredients are.
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS'];
 
-function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches }) {
+function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases }) {
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
   const [fulfilmentDateFilter, setFulfilmentDateFilter] = usePersistedState('fnv_purchase_fulfilmentdate', 'ALL'); // 'ALL' = All Purchase
   const [itemSearch, setItemSearch] = useState('');
   const [purchasedDate, setPurchasedDate] = useState('');
+  const [deleteBeforeDate, setDeleteBeforeDate] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [view, setView] = useState('list'); // 'list' | 'purchased'
@@ -3293,6 +3283,15 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   };
 
   const allPurchasedCount = purchases.filter((p) => p.type !== 'requirement').length;
+  const purchasesToDelete = deleteBeforeDate
+    ? purchases.filter((p) => p.type !== 'requirement' && p.date && p.date < deleteBeforeDate)
+    : [];
+  const deleteTotal = Math.round(purchasesToDelete.reduce((s, p) => s + (Number(p.cost) || 0), 0) * 100) / 100;
+  const confirmDelete = () => {
+    onDeleteOldPurchases(purchasesToDelete.map((p) => p.id));
+    setConfirmingDelete(false);
+    setDeleteBeforeDate('');
+  };
 
   if (view === 'purchased') {
     return (
@@ -3308,6 +3307,38 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
               <button onClick={() => setPurchasedDate('')} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear</button>
             )}
           </div>
+          <button
+            onClick={() => setConfirmingDelete((x) => !x)}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%', boxSizing: 'border-box', background: '#fff', color: TOMATO, border: `1px solid ${TOMATO}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, marginBottom: 10 }}
+          >
+            <Trash2 size={13} /> Delete old purchases
+          </button>
+          {confirmingDelete && (
+            <div style={{ border: `1px solid ${TOMATO}`, background: '#FCF1EC', borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 6 }}>Delete purchases before a date</div>
+              <Field type="date" value={deleteBeforeDate} onChange={(e) => setDeleteBeforeDate(e.target.value)} style={{ marginBottom: 8 }} />
+              {deleteBeforeDate && (
+                <div style={{ fontSize: 11, color: purchasesToDelete.length ? INK : MUTED, marginBottom: 8 }}>
+                  {purchasesToDelete.length === 0
+                    ? 'No purchases match this — nothing would be deleted.'
+                    : `Will permanently delete ${purchasesToDelete.length} record${purchasesToDelete.length === 1 ? '' : 's'} (₹${deleteTotal.toLocaleString('en-IN')}).`}
+                </div>
+              )}
+              <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
+                Removes them from this list and the vendor's purchase history, and can shift an item's last-known cost. Doesn't touch Vendor Ledger dues — settle those separately if needed.
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => { if (purchasesToDelete.length) confirmDelete(); }}
+                  disabled={!purchasesToDelete.length}
+                  style={{ flex: 1, background: purchasesToDelete.length ? TOMATO : '#E5E1D4', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}
+                >
+                  Delete{purchasesToDelete.length > 0 ? ` (${purchasesToDelete.length})` : ''}
+                </button>
+                <button onClick={() => { setConfirmingDelete(false); setDeleteBeforeDate(''); }} style={{ flex: 1, background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}>Cancel</button>
+              </div>
+            </div>
+          )}
           {purchasedList.map((p) => (
             <div key={p.id} style={{ borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{p.item}</div>
@@ -3452,9 +3483,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
 // For a given item and count-date, works out what should still be on hand:
 // the last physically-counted stock (if any), plus everything purchased since
 // then, minus everything actually dispatched (across every channel) since then.
-// This is the "Remaining stock" figure shown at nightly count time — whatever
-// the staff actually counts is then compared against this to log spoilage
-// (counted less) or surplus (counted more).
+// This is the "Remaining stock" figure shown at nightly count time — the staff
+// then confirms it or corrects it with the physical count.
 function computeExpectedStock(itemName, date, stockCounts, purchases, dispatchLog) {
   const priorCounts = stockCounts.filter((sc) => sc.itemName === itemName && sc.date < date);
   let baselineQty = 0;
@@ -3478,7 +3508,7 @@ function computeExpectedStock(itemName, date, stockCounts, purchases, dispatchLo
   return { expected, baselineQty, baselineDate, purchasedSince, consumedSince };
 }
 
-function StockCountRow({ item, existingCount, lastKnown, unit, expected, unitPrice, onSave }) {
+function StockCountRow({ item, existingCount, lastKnown, unit, expected, onSave }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState('');
 
@@ -3538,10 +3568,11 @@ function StockCountRow({ item, existingCount, lastKnown, unit, expected, unitPri
   );
 }
 
-function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord }) {
+function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord, onReset }) {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [search, setSearch] = useState('');
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   const countsForDate = useMemo(() => {
     const map = {};
@@ -3555,7 +3586,6 @@ function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord })
     return map;
   }, [stockCounts]);
 
-  const latestUnitPriceByItem = useMemo(() => buildLatestUnitPriceByItem(purchases), [purchases]);
 
   const filteredItems = items
     .filter((it) => categoryFilter === 'ALL' || it.category === categoryFilter)
@@ -3573,7 +3603,7 @@ function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord })
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 12 }}>
         <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><Layers size={15} /> Nightly stock count</div>
-        <div style={hint}>"Remaining stock" is worked out automatically — last count plus purchases minus everything dispatched since. Confirm it with the edit button, or correct it if the physical count is different; any gap is logged automatically as spoilage or surplus.</div>
+        <div style={hint}>"Remaining stock" is worked out automatically — last count plus purchases minus everything dispatched since. Confirm it with the edit button, or correct it if the physical count is different.</div>
         <div style={smallLabel}>DATE</div>
         <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         <div style={smallLabel}>CATEGORY</div>
@@ -3584,10 +3614,33 @@ function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord })
         <div style={{ fontSize: 11, color: MUTED, marginTop: 8 }}>{countedToday} / {filteredItems.length} counted for {date}</div>
       </Card>
 
+      <button
+        onClick={() => setConfirmingReset((x) => !x)}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%', boxSizing: 'border-box', background: '#fff', color: TOMATO, border: `1px solid ${TOMATO}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700, marginBottom: 12 }}
+      >
+        <RotateCcw size={13} /> Reset stock
+      </button>
+      {confirmingReset && (
+        <Card style={{ border: `1px solid ${TOMATO}`, background: '#FCF1EC', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Reset stock for {date}?</div>
+          <div style={{ fontSize: 11, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
+            This sets <strong>every item's</strong> remaining stock to 0 for this date — not just the {filteredItems.length} shown by your filters. "Remaining stock" from the day after builds up fresh from 0 instead of whatever it expected before. Use this to wipe a bad count, not routinely.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => { onReset(items, date); setConfirmingReset(false); }}
+              style={{ flex: 1, background: TOMATO, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}
+            >
+              Reset all {items.length}
+            </button>
+            <button onClick={() => setConfirmingReset(false)} style={{ flex: 1, background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}>Cancel</button>
+          </div>
+        </Card>
+      )}
+
       <Card>
         {sortedItems.map((it) => {
           const { expected } = computeExpectedStock(it.name, date, stockCounts, purchases, dispatchLog);
-          const unitPrice = latestUnitPriceByItem[it.name]?.unitPrice || 0;
           return (
             <StockCountRow
               key={it.id}
@@ -3596,60 +3649,11 @@ function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord })
               existingCount={countsForDate[it.id]}
               lastKnown={latestCountByItem[it.id]}
               expected={expected}
-              unitPrice={unitPrice}
-              onSave={(val) => onRecord(it.id, it.name, it.uom, date, val, expected, unitPrice)}
+              onSave={(val) => onRecord(it.id, it.name, it.uom, date, val)}
             />
           );
         })}
         {filteredItems.length === 0 && <div style={hint}>No items match this filter.</div>}
-      </Card>
-    </div>
-  );
-}
-
-function SpoilageSurplusTab({ spoilageSurplus }) {
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-
-  const entriesForDate = useMemo(
-    () => spoilageSurplus.filter((s) => s.date === date).sort((a, b) => b.value - a.value),
-    [spoilageSurplus, date]
-  );
-  const totalSpoilageValue = entriesForDate.filter((s) => s.type === 'spoilage').reduce((sum, s) => sum + (s.value || 0), 0);
-  const totalSurplusValue = entriesForDate.filter((s) => s.type === 'surplus').reduce((sum, s) => sum + (s.value || 0), 0);
-
-  return (
-    <div style={{ padding: 16 }}>
-      <Card style={{ marginBottom: 12 }}>
-        <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><AlertCircle size={15} /> Spoilage &amp; Surplus</div>
-        <div style={hint}>A nightly count that comes in lower than the expected remaining stock is logged here as spoilage (valued at the item's latest purchase price); a count that comes in higher is logged as surplus.</div>
-        <div style={smallLabel}>DATE</div>
-        <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ marginBottom: 10 }} />
-        <div style={{ display: 'flex', gap: 10 }}>
-          <div style={{ flex: 1, background: '#F3E7E2', borderRadius: 10, padding: '10px 12px' }}>
-            <div style={{ fontSize: 9, color: TOMATO, fontWeight: 700 }}>TOTAL SPOILAGE VALUE</div>
-            <div style={{ fontWeight: 800, fontSize: 17, color: TOMATO }}>₹{totalSpoilageValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-          </div>
-          <div style={{ flex: 1, background: '#EAF3DE', borderRadius: 10, padding: '10px 12px' }}>
-            <div style={{ fontSize: 9, color: LEAF_DARK, fontWeight: 700 }}>TOTAL SURPLUS VALUE</div>
-            <div style={{ fontWeight: 800, fontSize: 17, color: LEAF_DARK }}>₹{totalSurplusValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-          </div>
-        </div>
-      </Card>
-
-      <Card>
-        <div style={sectionTitle}>{date} ({entriesForDate.length})</div>
-        {entriesForDate.map((s) => (
-          <div key={s.id} style={{ borderTop: `1px solid ${LINE}`, padding: '10px 0' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: s.type === 'spoilage' ? TOMATO : LEAF_DARK }}>{s.itemName}</div>
-              <div style={{ fontWeight: 800, fontSize: 14, color: s.type === 'spoilage' ? TOMATO : LEAF_DARK }}>₹{(s.value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-            </div>
-            <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
-              Expected {s.expectedQty} {s.unit} · Counted {s.actualQty} {s.unit} · {s.type === 'spoilage' ? '−' : '+'}{s.qty} {s.unit} {s.type === 'spoilage' ? 'spoilage' : 'surplus'} @ ₹{(s.unitPrice || 0).toFixed(2)}/{s.unit}
-            </div>
-          </div>
-        ))}
-        {entriesForDate.length === 0 && <div style={hint}>No spoilage or surplus logged for {date}.</div>}
       </Card>
     </div>
   );
