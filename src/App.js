@@ -26,6 +26,18 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 
+// Today's date, in the device's local timezone — never use
+// `new Date().toISOString().split('T')[0]` for this: that renders in UTC,
+// which silently returns the wrong calendar day during part of the night in
+// any timezone ahead of UTC (all of India, for instance).
+function todayLocalDate() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 async function seedIfEmpty(colName, rows) {
   const snap = await getDocs(collection(db, colName));
   if (!snap.empty) return;
@@ -237,6 +249,26 @@ function parseIndentRows(json, platform) {
 // ---------- shared small UI ----------
 function Card({ children, style }) {
   return <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: RADIUS.xl, boxShadow: SHADOW_SM, padding: SPACE.md + 2, ...style }}>{children}</div>;
+}
+// A plain window.confirm() popup does not reliably appear inside this app's
+// Android WebView — a click can silently do nothing. This is the safe
+// replacement for a single delete action: tap once to arm it, tap Yes to
+// commit — nothing native involved.
+function ConfirmDeleteButton({ onConfirm, icon: Icon = Trash2, size = 14, title, style }) {
+  const [confirming, setConfirming] = useState(false);
+  if (!confirming) {
+    return (
+      <button onClick={() => setConfirming(true)} title={title} style={{ background: 'none', border: 'none', color: TOMATO, display: 'inline-flex', ...style }}>
+        <Icon size={size} />
+      </button>
+    );
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <button onClick={onConfirm} style={{ background: TOMATO, color: '#fff', border: 'none', borderRadius: 5, padding: '2px 7px', fontSize: 11, fontWeight: 700 }}>Yes</button>
+      <button onClick={() => setConfirming(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 5, padding: '2px 7px', fontSize: 11, fontWeight: 700 }}>No</button>
+    </span>
+  );
 }
 function Field(props) {
   return <input {...props} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: SPACE.sm, ...(props.style || {}) }} />;
@@ -512,8 +544,8 @@ export default function FnvMobilePreview() {
     batchIds.forEach((id) => b.delete(doc(db, 'indentBatches', id)));
     b.commit();
   };
-  const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: new Date().toISOString().split('T')[0], type: 'purchased', ...p, city: effectiveCity });
-  const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || new Date().toISOString().split('T')[0]; rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: effectiveCity })); b.commit(); };
+  const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: todayLocalDate(), type: 'purchased', ...p, city: effectiveCity });
+  const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || todayLocalDate(); rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: effectiveCity })); b.commit(); };
   const removePurchasesByIds = (ids) => { const b = writeBatch(db); ids.forEach((id) => b.delete(doc(db,'purchases',id))); b.commit(); };
   const recordStockCount = (itemId, itemName, unit, date, closingQty) => {
     fbSetDoc('stockCounts', `${itemId}__${date}`, { id: `${itemId}__${date}`, itemId, itemName, unit, date, closingQty: Number(closingQty) || 0, city: effectiveCity });
@@ -536,7 +568,7 @@ export default function FnvMobilePreview() {
   };
   const uploadGrnReport = (channel, date, fileName, rows, batchId) => {
     const id = `GRN-${channel.slice(0, 3).toUpperCase()}-${date}-${Date.now().toString(36).toUpperCase().slice(-6)}`;
-    fbSetDoc('grnReports', id, { id, channel, date, fileName, uploadedAt: new Date().toISOString().split('T')[0], rows, batchId: batchId || null });
+    fbSetDoc('grnReports', id, { id, channel, date, fileName, uploadedAt: todayLocalDate(), rows, batchId: batchId || null });
   };
   const addRecipe = (r) => fbSetDoc('recipes', r.id, r);
   const deleteRecipe = (id) => fbDelete('recipes', id);
@@ -575,7 +607,7 @@ export default function FnvMobilePreview() {
       });
     });
     b.commit();
-    const dispatchDate = new Date().toISOString().split('T')[0];
+    const dispatchDate = todayLocalDate();
     if (cratesUsed > 0) adjustCrates('crates', -cratesUsed, `Dispatch ${vehicleNo || ''}`.trim());
     if (boxesUsed > 0) adjustCrates('boxes', -boxesUsed, `Dispatch ${vehicleNo || ''}`.trim());
     const did = `DSP-${Date.now().toString(36).toUpperCase().slice(-6)}`;
@@ -655,7 +687,7 @@ export default function FnvMobilePreview() {
   const deletePlacedOrder = (id) => fbDelete('placedOrders', id);
   const addLedgerEntry = (entry) => {
     fbSetDoc('vendorLedger', entry.id, { ...entry, city: effectiveCity });
-    addPurchase({ id: `P-${Date.now().toString(36).toUpperCase().slice(-5)}`, item: entry.itemName, supplier: entry.vendorName, qty: entry.qty, unit: entry.unit, cost: entry.total, source: entry.payment === 'credit' ? `Credit — ${entry.vendorName}` : entry.payment, date: entry.date });
+    addPurchase({ id: `P-${Date.now().toString(36).toUpperCase().slice(-5)}`, itemId: entry.itemId || null, item: entry.itemName, supplier: entry.vendorName, qty: entry.qty, unit: entry.unit, cost: entry.total, source: entry.payment === 'credit' ? `Credit — ${entry.vendorName}` : entry.payment, date: entry.date });
   };
   const settleEntries = (ids, paymentMode, note, edits = {}) => {
     const b = writeBatch(db);
@@ -665,7 +697,7 @@ export default function FnvMobilePreview() {
       const qty = d.qty !== undefined ? Number(d.qty) : e.qty;
       const unitPrice = d.unitPrice !== undefined ? Number(d.unitPrice) : e.unitPrice;
       const total = d.total !== undefined ? Number(d.total) : Math.round(qty * unitPrice * 100) / 100;
-      b.update(doc(db, 'vendorLedger', id), { qty, unitPrice, total, settled: true, settledPayment: paymentMode, settledNote: note, settledDate: new Date().toISOString().split('T')[0] });
+      b.update(doc(db, 'vendorLedger', id), { qty, unitPrice, total, settled: true, settledPayment: paymentMode, settledNote: note, settledDate: todayLocalDate() });
     });
     b.commit();
   };
@@ -758,7 +790,7 @@ export default function FnvMobilePreview() {
           )}
           {tab === 'items' && <ItemsTab items={cityItems} onAdd={addItem} onAddBulk={addItemsBulk} onUpdate={updateItem} onDelete={deleteItem} />}
           {tab === 'vendors' && (
-            <VendorsTab items={cityItems} vendors={cityVendors} vendorLedger={cityVendorLedger} placedOrders={placedOrders} purchases={cityPurchases} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} />
+            <VendorsTab items={cityItems} vendors={cityVendors} vendorLedger={cityVendorLedger} placedOrders={placedOrders} purchases={cityPurchases} onAdd={addVendor} onDelete={deleteVendor} onToggleItem={toggleVendorItem} onSettle={settleEntries} onUpdatePlacedOrder={updatePlacedOrder} onDeletePlacedOrder={deletePlacedOrder} onAddLedgerEntry={addLedgerEntry} />
           )}
           {tab === 'cutprocess' && <CutProcessTab items={items} recipes={recipes} orders={orders} onAddRecipe={addRecipe} onDeleteRecipe={deleteRecipe} onAddPurchaseRequirements={addPurchaseRequirements} />}
           {tab === 'orders' && (
@@ -1022,7 +1054,7 @@ function computePayroll(person, monthStr, attendance, advances) {
 }
 
 function AttendanceTab({ staff, attendance, onMark, onClear }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayLocalDate();
   const [date, setDate] = useState(today);
   const isLocked = date !== today;
 
@@ -1132,7 +1164,7 @@ function StaffPanelMobile({ staff, attendance, advances, onSaveStaff, onDeleteSt
 }
 
 function StaffPeopleMobile({ staff, onSaveStaff, onDeleteStaff }) {
-  const blank = { id: '', name: '', phone: '', role: '', joiningDate: new Date().toISOString().split('T')[0], monthlySalary: '', status: 'active' };
+  const blank = { id: '', name: '', phone: '', role: '', joiningDate: todayLocalDate(), monthlySalary: '', status: 'active' };
   const [editing, setEditing] = useState(null);
 
   const save = () => {
@@ -1197,7 +1229,7 @@ function StaffPeopleMobile({ staff, onSaveStaff, onDeleteStaff }) {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={() => setEditing({ ...blank, ...p })} style={{ background: 'none', border: 'none', color: LEAF }}><Pencil size={15} /></button>
-              <button onClick={() => { if (window.confirm(`Delete ${p.name}?`)) onDeleteStaff(p.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={15} /></button>
+              <ConfirmDeleteButton onConfirm={() => onDeleteStaff(p.id)} size={15} title={`Delete ${p.name}`} />
             </div>
           </div>
         </Card>
@@ -1263,7 +1295,7 @@ function StaffAttendanceMobile({ staff, attendance, month, onMark, onClear }) {
 function StaffAdvancesMobile({ staff, advances, month, onSave, onDelete }) {
   const [adding, setAdding] = useState(false);
   const [staffId, setStaffId] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(todayLocalDate());
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
 
@@ -1316,7 +1348,7 @@ function StaffAdvancesMobile({ staff, advances, month, onSave, onDelete }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontWeight: 700, color: AMBER }}>{money(a.amount)}</span>
-              <button onClick={() => { if (window.confirm('Delete this advance?')) onDelete(a.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={14} /></button>
+              <ConfirmDeleteButton onConfirm={() => onDelete(a.id)} title="Delete this advance" />
             </div>
           </div>
         </Card>
@@ -1361,7 +1393,7 @@ function StaffPayrollMobile({ staff, attendance, advances, month }) {
 }
 
 function DashboardTab({ orders, purchases, crates, packingProgress, dispatchLog }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayLocalDate();
   const todayTrips = dispatchLog.filter((d) => d.date === today).length;
   const todaySpend = purchases.filter((p) => p.date === today).reduce((s, p) => s + p.cost, 0);
   const blinkitProgress = computeChannelDayProgress(orders, packingProgress, 'Blinkit', today);
@@ -1466,6 +1498,155 @@ function parseBulkItemRows(json) {
     });
   });
   return results;
+}
+
+// Mirrors the admin panel's Add Purchase flow — stage as many items from this
+// vendor visit as needed, then save them all together — using this app's own
+// bottom-sheet modal convention instead of a centered dialog.
+function AddPurchaseModalMobile({ vendor, items, defaultDate, onSave, onClose }) {
+  const vendorItems = items.filter((it) => (vendor.itemIds || []).includes(it.id));
+  const itemOptions = vendorItems.length > 0 ? vendorItems : items;
+  const [itemId, setItemId] = useState(itemOptions[0]?.id || '');
+  const [qty, setQty] = useState('');
+  const [unitPrice, setUnitPrice] = useState('');
+  const [totalInput, setTotalInput] = useState('');
+  const [note, setNote] = useState('');
+  const [date, setDate] = useState(defaultDate);
+  const [paymentMode, setPaymentMode] = useState('credit');
+  const [stagedItems, setStagedItems] = useState([]);
+
+  const selectedItem = items.find((it) => it.id === itemId);
+  const derivedTotal = qty && unitPrice ? Math.round(Number(qty) * Number(unitPrice) * 100) / 100 : null;
+  const derivedUnitPrice = qty && totalInput && !unitPrice ? Math.round((Number(totalInput) / Number(qty)) * 100) / 100 : null;
+  const totalPrice = derivedTotal ?? (totalInput ? Number(totalInput) : 0);
+  const finalUnitPrice = unitPrice ? Number(unitPrice) : (derivedUnitPrice ?? 0);
+  const canAddLine = itemId && qty && (unitPrice || totalInput);
+
+  const handleUnitPriceChange = (v) => { setUnitPrice(v); if (v && qty) setTotalInput(''); };
+  const handleTotalChange = (v) => { setTotalInput(v); if (v && qty) setUnitPrice(''); };
+
+  const addLine = () => {
+    if (!canAddLine) return;
+    setStagedItems((prev) => [...prev, {
+      key: `${Date.now().toString(36)}-${prev.length}`,
+      itemId, itemName: selectedItem?.name || '', unit: selectedItem?.uom || '',
+      qty: Number(qty), unitPrice: finalUnitPrice, total: totalPrice, note: note.trim(),
+    }]);
+    setItemId(itemOptions[0]?.id || '');
+    setQty(''); setUnitPrice(''); setTotalInput(''); setNote('');
+  };
+  const removeLine = (key) => setStagedItems((prev) => prev.filter((l) => l.key !== key));
+  const batchTotal = Math.round(stagedItems.reduce((s, l) => s + l.total, 0) * 100) / 100;
+
+  const submitAll = () => {
+    if (!stagedItems.length || !date) return;
+    const entries = stagedItems.map((line, i) => ({
+      id: `LED-${Date.now().toString(36).toUpperCase()}${i}`,
+      vendorId: vendor.id,
+      vendorName: vendor.name,
+      itemId: line.itemId,
+      itemName: line.itemName,
+      qty: line.qty,
+      unit: line.unit,
+      unitPrice: line.unitPrice,
+      total: line.total,
+      payment: paymentMode,
+      date,
+      note: line.note,
+      settled: paymentMode !== 'credit',
+    }));
+    onSave(entries);
+  };
+
+  const today = todayLocalDate();
+  const isBackdated = date && date < today;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 200 }}>
+      <div style={{ background: '#fff', borderRadius: '18px 18px 0 0', padding: '24px 20px 32px', width: '100%', maxWidth: 420, maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>Add purchase</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, color: MUTED, cursor: 'pointer' }}>✕</button>
+        </div>
+        <div style={hint}>For {vendor.name} — add as many items as this visit needs, then save them together. Missed logging one? Set the date to whichever day it happened.</div>
+
+        <div style={smallLabel}>DATE (applies to this whole visit)</div>
+        <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} max={today} style={{ borderColor: isBackdated ? AMBER : LINE, fontWeight: 700 }} />
+        {isBackdated && (
+          <div style={{ margin: '-6px 0 10px', fontSize: 11, color: AMBER }}>⚠ Backdated to {formatLedgerDate(date)}</div>
+        )}
+
+        {stagedItems.length > 0 && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={smallLabel}>ADDED SO FAR ({stagedItems.length})</div>
+            <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+              {stagedItems.map((line, i) => (
+                <div key={line.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 10px', borderTop: i > 0 ? `1px solid ${LINE}` : 'none' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{line.itemName}</div>
+                    <div style={{ fontSize: 11, color: MUTED }}>{line.qty} {line.unit} × ₹{line.unitPrice} {line.note ? `· ${line.note}` : ''}</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>₹{line.total.toLocaleString('en-IN')}</span>
+                    <button onClick={() => removeLine(line.key)} style={{ background: 'none', border: 'none', color: TOMATO, cursor: 'pointer', padding: 0, display: 'flex' }}><X size={15} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={smallLabel}>{stagedItems.length > 0 ? 'ADD ANOTHER ITEM' : 'ITEM'}</div>
+        <select value={itemId} onChange={(e) => setItemId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: SPACE.sm }}>
+          {itemOptions.length === 0 && <option value="">No items available</option>}
+          {itemOptions.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}
+        </select>
+        {vendorItems.length === 0 && items.length > 0 && (
+          <div style={{ margin: '-6px 0 10px', fontSize: 11, color: MUTED }}>No items linked to {vendor.name} yet — showing all items.</div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={smallLabel}>QTY ({selectedItem?.uom || 'unit'})</div>
+            <Field type="number" placeholder="0" value={qty} onChange={(e) => setQty(e.target.value)} style={{ marginBottom: 0 }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={smallLabel}>UNIT PRICE (₹)</div>
+            <Field placeholder={derivedUnitPrice ? String(derivedUnitPrice) : '0'} type="number" value={unitPrice} onChange={(e) => handleUnitPriceChange(e.target.value)} style={{ marginBottom: 0 }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={smallLabel}>OR TOTAL (₹)</div>
+            <Field placeholder={derivedTotal ? String(derivedTotal) : '0'} type="number" value={totalInput} onChange={(e) => handleTotalChange(e.target.value)} style={{ marginBottom: 0 }} />
+          </div>
+        </div>
+
+        <Field placeholder="Note for this item (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+
+        <button
+          onClick={addLine}
+          disabled={!canAddLine}
+          style={{ width: '100%', background: '#fff', color: canAddLine ? LEAF : '#B9B29C', border: `1px solid ${canAddLine ? LEAF : LINE}`, borderRadius: 10, padding: '10px 0', fontWeight: 700, fontSize: 13, cursor: canAddLine ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 18 }}
+        >
+          <Plus size={14} /> Add this item{totalPrice > 0 ? ` — ₹${totalPrice.toLocaleString('en-IN')}` : ''} to the list
+        </button>
+
+        <div style={smallLabel}>PAYMENT MODE (applies to this whole visit)</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+          {[{ key: 'cash', label: '💵 Cash' }, { key: 'upi', label: '📱 UPI' }, { key: 'bank', label: '🏦 Bank' }, { key: 'credit', label: '📒 Credit' }].map((m) => (
+            <button key={m.key} onClick={() => setPaymentMode(m.key)} style={{ flex: 1, padding: '8px 4px', borderRadius: 8, border: `1.5px solid ${paymentMode === m.key ? (m.key === 'credit' ? AMBER : LEAF) : LINE}`, background: paymentMode === m.key ? (m.key === 'credit' ? '#FBEFDC' : '#EAF3DE') : '#fff', color: paymentMode === m.key ? (m.key === 'credit' ? AMBER : LEAF_DARK) : INK, fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        <PrimaryBtn onClick={submitAll} disabled={!stagedItems.length} color={paymentMode === 'credit' ? AMBER : LEAF}>
+          {stagedItems.length === 0
+            ? 'Add at least one item above'
+            : (paymentMode === 'credit' ? `Add ${stagedItems.length} item${stagedItems.length === 1 ? '' : 's'} on credit — ₹${batchTotal.toLocaleString('en-IN')}` : `Add ${stagedItems.length} item${stagedItems.length === 1 ? '' : 's'} — ₹${batchTotal.toLocaleString('en-IN')}`)}
+        </PrimaryBtn>
+      </div>
+    </div>
+  );
 }
 
 // The Ledger above only carries CREDIT purchases (those are what create a due).
@@ -1606,7 +1787,7 @@ function downloadVendorLedgerCsv(vendorName, groups, onlyOutstanding) {
   const a = document.createElement('a');
   a.href = url;
   const safeName = vendorName.replace(/[^a-z0-9]+/gi, '_');
-  a.download = `${safeName}_ledger_${onlyOutstanding ? 'outstanding' : 'complete'}_${new Date().toISOString().split('T')[0]}.csv`;
+  a.download = `${safeName}_ledger_${onlyOutstanding ? 'outstanding' : 'complete'}_${todayLocalDate()}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1761,7 +1942,7 @@ function formatLedgerDate(d, short) {
 const isDueEntry = (e) => e.payment === 'credit' && !e.settled;
 const money = (n) => `₹${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-IN')}`;
 
-function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onAdd, onDelete, onToggleItem, onSettle, onUpdatePlacedOrder, onDeletePlacedOrder }) {
+function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onAdd, onDelete, onToggleItem, onSettle, onUpdatePlacedOrder, onDeletePlacedOrder, onAddLedgerEntry }) {
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [vendorSearch, setVendorSearch] = useState('');
@@ -1777,6 +1958,7 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
   const [payNote, setPayNote] = useState('');
   const [expandedGroup, setExpandedGroup] = useState(null);
   const [draftEdits, setDraftEdits] = useState({});
+  const [addPurchaseModal, setAddPurchaseModal] = useState(null); // { vendor, defaultDate } | null
 
   const submit = () => {
     if (!name.trim()) return;
@@ -1846,7 +2028,7 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
     setOpenVendorId(id); setLedgerFilter('due'); setSelectedDates([]);
     setExpandedGroup(null); setShowItems(false); setConfirmDeleteId(null);
   };
-  const closeLedger = () => { setOpenVendorId(null); setSelectedDates([]); setExpandedGroup(null); setConfirmDeleteId(null); };
+  const closeLedger = () => { setOpenVendorId(null); setSelectedDates([]); setExpandedGroup(null); setConfirmDeleteId(null); setAddPurchaseModal(null); };
   const toggleDate = (d) => setSelectedDates((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
 
   // ---- Payment modal (bottom sheet) shared by the list and the ledger view
@@ -1933,7 +2115,13 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
               <div style={{ fontWeight: 800, fontSize: 20, color: vendorDue > 0 ? AMBER : LEAF }}>{money(vendorDue)}</div>
             </div>
           </div>
-          <div style={{ marginTop: 12 }}>
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <button
+              onClick={() => setAddPurchaseModal({ vendor: openVendor, defaultDate: todayLocalDate() })}
+              style={{ width: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: RADIUS.lg, padding: '10px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+            >
+              <Plus size={14} /> Add purchase
+            </button>
             <PrimaryBtn onClick={() => openPay(openVendor, vendorDueEntries)} disabled={vendorDueEntries.length === 0}>
               {vendorDueEntries.length === 0 ? 'Nothing due' : `Pay all outstanding — ${money(vendorDue)}`}
             </PrimaryBtn>
@@ -2102,6 +2290,15 @@ function VendorsTab({ items, vendors, vendorLedger, placedOrders, purchases, onA
         )}
 
         {payModalEl}
+        {addPurchaseModal && (
+          <AddPurchaseModalMobile
+            vendor={addPurchaseModal.vendor}
+            items={items}
+            defaultDate={addPurchaseModal.defaultDate}
+            onSave={(entries) => { entries.forEach(onAddLedgerEntry); setAddPurchaseModal(null); }}
+            onClose={() => setAddPurchaseModal(null)}
+          />
+        )}
       </div>
     );
   }
@@ -2676,6 +2873,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           platform: pendingIndent.platform,
           store,
           product: item.name,
+          itemId: item.id,
           articleName: r.rawName,
           qty: storeQty,
           unit: item.uom,
@@ -2818,10 +3016,15 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{r.rawName}</div>
                       <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 6px' }}>Qty {r.qty} · UOM {r.unit || '—'} · Code {r.rawCode || '—'} · {r.rawCategory || '—'}</div>
                       <div style={smallLabel}>Map to item</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-                        {items.map((it) => <Chip key={it.id} label={it.name} active={r.mappedItemId === it.id} onClick={() => setRowMapping(r.key, it.id)} />)}
-                        <Chip label={`+ New "${r.rawName}"`} active={false} onClick={() => setRowMapping(r.key, '__new__')} />
-                      </div>
+                      <select
+                        value={r.mappedItemId || ''}
+                        onChange={(e) => setRowMapping(r.key, e.target.value)}
+                        style={{ width: '100%', boxSizing: 'border-box', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, padding: '10px 8px', fontSize: 13, marginBottom: 8, background: '#fff' }}
+                      >
+                        <option value="">Not mapped</option>
+                        {items.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}
+                        <option value="__new__">{`+ New "${r.rawName}"`}</option>
+                      </select>
                       {mappedItem && rowAlias && (
                         <>
                           <div style={smallLabel}>Pack size ({mappedItem.uom} per pack)</div>
@@ -2998,7 +3201,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const [totalInput, setTotalInput] = useState('');
   const [paymentMode, setPaymentMode] = useState('credit');
   const [purchaseNote, setPurchaseNote] = useState('');
-  const [purchaseDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [purchaseDate] = useState(() => todayLocalDate());
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
 
   const [showAllVendorItems, setShowAllVendorItems] = useState(false);
@@ -3420,7 +3623,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     const orderItems = filteredItems
       .filter((it) => selectedItemIds.includes(it.id))
       .map((it, idx) => ({ no: idx + 1, itemId: it.id, itemName: it.name, uom: it.unit, qty: it.toBuy }));
-    onSavePlacedOrder({ id: `ORD-${Date.now().toString(36).toUpperCase().slice(-6)}`, name: orderNameDraft.trim() || `Order ${new Date().toLocaleDateString('en-IN')}`, date: new Date().toISOString().split('T')[0], items: orderItems });
+    onSavePlacedOrder({ id: `ORD-${Date.now().toString(36).toUpperCase().slice(-6)}`, name: orderNameDraft.trim() || `Order ${new Date().toLocaleDateString('en-IN')}`, date: todayLocalDate(), items: orderItems });
     setShowOrderNameModal(false);
     setOrderNameDraft('');
     exitSelectMode();
@@ -3746,7 +3949,7 @@ function StockCountRow({ item, existingCount, lastKnown, unit, expected, onSave 
 }
 
 function StockCountTab({ items, stockCounts, purchases, dispatchLog, onRecord, onReset }) {
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(todayLocalDate());
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -3848,15 +4051,26 @@ function computeFinalPrice(basePrice, config) {
 }
 
 function buildLatestUnitPriceByItem(purchases) {
-  const map = {};
+  // Two maps, not one — an order created before itemId was tracked only has a
+  // name to look up by, so a *newer* purchase (which does carry itemId) must
+  // still be reachable through its name. Every purchase that has a name is
+  // recorded in byName regardless of whether it also has an itemId, so the
+  // two maps independently reflect the true latest purchase either way could
+  // find; buildPricingArticles then takes whichever of the two is newer.
+  const byId = {};
+  const byName = {};
   purchases
     .filter((p) => p.type !== 'requirement' && p.qty > 0)
     .forEach((p) => {
-      if (!map[p.item] || (p.date || '') >= (map[p.item].date || '')) {
-        map[p.item] = { date: p.date || '', unitPrice: p.cost / p.qty };
+      const entry = { date: p.date || '', unitPrice: p.cost / p.qty };
+      if (p.itemId) {
+        if (!byId[p.itemId] || entry.date >= byId[p.itemId].date) byId[p.itemId] = entry;
+      }
+      if (p.item) {
+        if (!byName[p.item] || entry.date >= byName[p.item].date) byName[p.item] = entry;
       }
     });
-  return map;
+  return { byId, byName };
 }
 
 
@@ -4126,7 +4340,9 @@ function buildPricingArticles(orders, items, purchases, city, configByKey) {
       const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
       if (map[key]) return;
       const item = items.find((it) => it.name === o.product);
-      const unitPriceInfo = latestUnitPriceByItem[o.product];
+      const byIdInfo = o.itemId ? latestUnitPriceByItem.byId[o.itemId] : null;
+      const byNameInfo = latestUnitPriceByItem.byName[o.product];
+      const unitPriceInfo = !byIdInfo ? byNameInfo : (!byNameInfo ? byIdInfo : (byIdInfo.date >= byNameInfo.date ? byIdInfo : byNameInfo));
       const autoBasePrice = unitPriceInfo ? Math.round(unitPriceInfo.unitPrice * o.packSize * 100) / 100 : null;
       // A base price fetched from the latest purchase is the default — but a specific
       // article's config can carry a manual override (e.g. before any purchase exists yet,
@@ -4448,13 +4664,30 @@ function SalesBatchesMobile({ batchFinancials, onOpen }) {
   );
 }
 
+function PoReportRowMobile({ report, onRemove }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginTop: 2 }}>
+      <div style={{ fontSize: 11, color: MUTED }}>{report.fileName}</div>
+      {!confirming ? (
+        <button onClick={() => setConfirming(true)} style={{ background: 'none', border: 'none', color: TOMATO, fontSize: 10, fontWeight: 700, flexShrink: 0, padding: 0 }}>Remove</button>
+      ) : (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+          <button onClick={onRemove} style={{ background: TOMATO, color: '#fff', border: 'none', borderRadius: 5, padding: '2px 6px', fontSize: 10, fontWeight: 700 }}>Yes</button>
+          <button onClick={() => setConfirming(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 5, padding: '2px 6px', fontSize: 10, fontWeight: 700 }}>No</button>
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpdateIndentBatch }) {
   const poRef = useRef(null);
   const grnRef = useRef(null);
   const [poError, setPoError] = useState('');
   const [grnError, setGrnError] = useState('');
   const batch = bf.batch;
-  const batchDate = batch.purchaseDate || new Date().toISOString().split('T')[0];
+  const batchDate = batch.purchaseDate || todayLocalDate();
 
   const handlePoFile = (e) => {
     const file = e.target.files[0];
@@ -4558,7 +4791,9 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
         {bf.poReports.length > 0 && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: MUTED }}>{bf.poReports.length} PO REPORT{bf.poReports.length === 1 ? '' : 'S'}</div>
-            {bf.poReports.map((r) => <div key={r.id} style={{ fontSize: 11, color: MUTED }}>{r.fileName}</div>)}
+            {bf.poReports.map((r) => (
+              <PoReportRowMobile key={r.id} report={r} onRemove={() => onUpdateIndentBatch(batch.id, { poReports: bf.poReports.filter((x) => x.id !== r.id) })} />
+            ))}
           </div>
         )}
         {reports.length > 0 && (
@@ -4610,7 +4845,7 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
 function SalesInvoicesMobile({ batchFinancials, salesInvoices, salesPayments, onSaveInvoice, onDeleteInvoice }) {
   const [creating, setCreating] = useState(false);
   const [invoiceNumber, setInvoiceNumber] = useState('');
-  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [invoiceDate, setInvoiceDate] = useState(todayLocalDate());
   const [amount, setAmount] = useState('');
   const [selectedBatchIds, setSelectedBatchIds] = useState([]);
 
@@ -4665,7 +4900,7 @@ function SalesInvoicesMobile({ batchFinancials, salesInvoices, salesPayments, on
           <Card key={inv.id} style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{inv.invoiceNumber}</div>
-              <button onClick={() => { if (window.confirm(`Delete invoice ${inv.invoiceNumber}?`)) onDeleteInvoice(inv.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={14} /></button>
+              <ConfirmDeleteButton onConfirm={() => onDeleteInvoice(inv.id)} title={`Delete invoice ${inv.invoiceNumber}`} />
             </div>
             <div style={{ fontSize: 11, color: MUTED, marginBottom: 4 }}>{inv.invoiceDate}</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
@@ -4683,7 +4918,7 @@ function SalesInvoicesMobile({ batchFinancials, salesInvoices, salesPayments, on
 function SalesPaymentsMobile({ batchFinancials, salesInvoices, salesPayments, onSavePayment, onDeletePayment }) {
   const [logging, setLogging] = useState(false);
   const [platform, setPlatform] = useState(PLATFORMS[0]);
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(todayLocalDate());
   const [amount, setAmount] = useState('');
   const [reference, setReference] = useState('');
   const [linkedId, setLinkedId] = useState('');
@@ -4789,7 +5024,7 @@ function SalesPaymentsMobile({ batchFinancials, salesInvoices, salesPayments, on
         <Card key={p.id} style={{ marginBottom: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>{p.platform} · {money(p.amount)}</div>
-            <button onClick={() => { if (window.confirm('Delete this payment?')) onDeletePayment(p.id); }} style={{ background: 'none', border: 'none', color: TOMATO }}><Trash2 size={14} /></button>
+            <ConfirmDeleteButton onConfirm={() => onDeletePayment(p.id)} title="Delete this payment" />
           </div>
           <div style={{ fontSize: 11, color: MUTED }}>{p.date} {p.reference ? `· ${p.reference}` : ''} · {p.linkedInvoiceId || p.linkedBatchId || 'General'}</div>
         </Card>
@@ -4821,7 +5056,7 @@ function downloadPricingSheet(rows) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `fnv-pricing-sheet-${new Date().toISOString().split('T')[0]}.xlsx`;
+  a.download = `fnv-pricing-sheet-${todayLocalDate()}.xlsx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
