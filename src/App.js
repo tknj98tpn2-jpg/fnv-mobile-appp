@@ -495,30 +495,43 @@ export default function FnvMobilePreview() {
   // code, which makes future auto-matching pick whichever item happens to come first.
   const ensureAliasForCode = (itemId, channel, code, ean) => {
     const it = items.find((x) => x.id === itemId); if (!it) return;
-    if (!code) {
-      const exists = (it.aliases || []).some((a) => a.channel === channel && !a.code);
+    if (!code && !ean) {
+      const exists = (it.aliases || []).some((a) => a.channel === channel && !a.code && !a.ean);
       if (exists) return;
-      fbUpdate('items', itemId, { aliases: [...(it.aliases || []), { id: newAliasId(), channel, code: '', packSize: '', packUnit: 'kg' }] });
+      fbUpdate('items', itemId, { aliases: [...(it.aliases || []), { id: newAliasId(), channel, code: '', ean: '', packSize: '', packUnit: 'kg' }] });
       return;
     }
-    const codeLower = code.toLowerCase();
-    const existing = (it.aliases || []).find((a) => a.channel === channel && a.code && a.code.toLowerCase() === codeLower);
+    // EAN is the item's permanent retail barcode; a channel's own FSN/SKU code
+    // can be reissued (e.g. a relisting) even though the physical product —
+    // and its EAN — hasn't changed. Flipkart's code is never used to
+    // identify/dedupe an alias — per instruction, only EAN drives Flipkart
+    // matching; the code is still saved on the alias purely as a reference
+    // field, never compared against.
+    const eanLower = ean ? String(ean).toLowerCase() : '';
+    const rawCodeLower = code ? code.toLowerCase() : '';
+    const codeLower = channel === 'Flipkart' ? '' : rawCodeLower;
+    const existing = (it.aliases || []).find((a) => a.channel === channel && (
+      (eanLower && a.ean && String(a.ean).toLowerCase() === eanLower) ||
+      (codeLower && a.code && a.code.toLowerCase() === codeLower)
+    ));
     if (existing) {
-      // Alias already exists, but may predate the EAN field — backfill it so
-      // barcode printing (from the admin panel) has the retail code to work with.
-      if (ean && !existing.ean) {
-        fbUpdate('items', itemId, { aliases: it.aliases.map((a) => (a.id === existing.id ? { ...a, ean } : a)) });
-      }
+      const patch = {};
+      if (ean && !existing.ean) patch.ean = ean;
+      if (code && existing.code !== code) patch.code = code; // FSN changed for the same EAN — keep the current one
+      if (Object.keys(patch).length) fbUpdate('items', itemId, { aliases: it.aliases.map((a) => (a.id === existing.id ? { ...a, ...patch } : a)) });
       return;
     }
     items.forEach((other) => {
       if (other.id === itemId) return;
-      const hasIt = (other.aliases || []).some((a) => a.channel === channel && a.code && a.code.toLowerCase() === codeLower);
+      const hasIt = (other.aliases || []).some((a) => a.channel === channel && (
+        (eanLower && a.ean && String(a.ean).toLowerCase() === eanLower) ||
+        (codeLower && a.code && a.code.toLowerCase() === codeLower)
+      ));
       if (hasIt) {
-        fbUpdate('items', other.id, { aliases: other.aliases.filter((a) => !(a.channel === channel && a.code && a.code.toLowerCase() === codeLower)) });
+        fbUpdate('items', other.id, { aliases: other.aliases.filter((a) => !(a.channel === channel && ((eanLower && a.ean && String(a.ean).toLowerCase() === eanLower) || (codeLower && a.code && a.code.toLowerCase() === codeLower)))) });
       }
     });
-    fbUpdate('items', itemId, { aliases: [...(it.aliases || []), { id: newAliasId(), channel, code, ean: ean || '', packSize: '', packUnit: 'kg' }] });
+    fbUpdate('items', itemId, { aliases: [...(it.aliases || []), { id: newAliasId(), channel, code: code || '', ean: ean || '', packSize: '', packUnit: 'kg' }] });
   };
   const updateAliasById = (itemId, aliasId, patch) => {
     const it = items.find((x) => x.id === itemId); if (!it) return;
@@ -1446,15 +1459,22 @@ function DashboardTab({ orders, purchases, crates, packingProgress, dispatchLog 
 }
 
 // ---------- Items ----------
+// "Code" is the channel's own SKU/FSN — it can be reissued on a relisting.
+// "EAN" is the item's permanent retail barcode and should be filled whenever
+// it's known, since it's what keeps indent-matching working even after a
+// channel reissues its SKU/FSN. Never put an EAN value into a "Code" column
+// (or vice versa) — they're matched against different fields.
 const ITEM_TEMPLATE_ROWS = [
   {
     'Item Name': 'Tomato',
     UOM: 'kg',
     Category: 'VEGETABLES',
     'Blinkit Code': 'BLK-TOM-240',
+    'Blinkit EAN': '',
     'Blinkit Pack Size': 0.5,
     'Blinkit Pack Unit': 'kg',
     'Flipkart Code': 'FKT-TOM-01',
+    'Flipkart EAN': '',
     'Flipkart Pack Size': 1,
     'Flipkart Pack Unit': 'kg',
   },
@@ -1484,14 +1504,16 @@ function parseBulkItemRows(json) {
     const uom = String(pickField(r, ['uom', 'unit']) || 'kg').trim() || 'kg';
     const category = normalizeCategory(pickField(r, ['category', 'type']));
     const blinkitCode = String(pickField(r, ['blinkitcode']) || '').trim();
+    const blinkitEan = String(pickField(r, ['blinkitean']) || '').trim();
     const blinkitPackSize = String(pickField(r, ['blinkitpacksize']) || '').trim();
     const blinkitPackUnit = String(pickField(r, ['blinkitpackunit']) || 'kg').trim() || 'kg';
     const flipkartCode = String(pickField(r, ['flipkartcode']) || '').trim();
+    const flipkartEan = String(pickField(r, ['flipkartean']) || '').trim();
     const flipkartPackSize = String(pickField(r, ['flipkartpacksize']) || '').trim();
     const flipkartPackUnit = String(pickField(r, ['flipkartpackunit']) || 'kg').trim() || 'kg';
     const aliases = [];
-    if (blinkitCode || blinkitPackSize) aliases.push({ id: newAliasId(), channel: 'Blinkit', code: blinkitCode, packSize: blinkitPackSize, packUnit: blinkitPackUnit });
-    if (flipkartCode || flipkartPackSize) aliases.push({ id: newAliasId(), channel: 'Flipkart', code: flipkartCode, packSize: flipkartPackSize, packUnit: flipkartPackUnit });
+    if (blinkitCode || blinkitEan || blinkitPackSize) aliases.push({ id: newAliasId(), channel: 'Blinkit', code: blinkitCode, ean: blinkitEan, packSize: blinkitPackSize, packUnit: blinkitPackUnit });
+    if (flipkartCode || flipkartEan || flipkartPackSize) aliases.push({ id: newAliasId(), channel: 'Flipkart', code: flipkartCode, ean: flipkartEan, packSize: flipkartPackSize, packUnit: flipkartPackUnit });
     results.valid.push({
       id: `IT-${Date.now().toString(36).toUpperCase().slice(-5)}-${results.valid.length}`,
       name, uom, category, aliases,
@@ -2793,7 +2815,23 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
         const rawRows = parseIndentRows(json, indentPlatform);
         if (rawRows.length === 0) { setFileError('No article rows with a valid name and quantity were found.'); return; }
         const rows = rawRows.map((r) => {
-          const match = items.find((it) => (r.rawCode && (it.aliases || []).some((a) => a.channel === indentPlatform && a.code && a.code.toLowerCase() === r.rawCode.toLowerCase())) || it.name.toLowerCase() === r.rawName.toLowerCase());
+          const rawEanLower = r.rawEan ? r.rawEan.toLowerCase() : '';
+          // Flipkart reissues its own FSN/SKU "code" on a relisting even when the
+          // physical product hasn't changed, so — per instruction — Flipkart's code
+          // is never used to auto-match an indent row; only the EAN (the item's
+          // permanent retail barcode) and, failing that, the article name are used.
+          // Blinkit is unaffected and still matches on its code as before.
+          const useCodeMatch = indentPlatform !== 'Flipkart';
+          const match = items.find((it) =>
+            (rawEanLower && (it.aliases || []).some((a) => a.channel === indentPlatform && a.ean && String(a.ean).toLowerCase() === rawEanLower)) ||
+            (useCodeMatch && r.rawCode && (it.aliases || []).some((a) => a.channel === indentPlatform && a.code && a.code.toLowerCase() === r.rawCode.toLowerCase())) ||
+            // Some items were previously imported (an item export re-imported via Bulk
+            // Import into another city) with their EAN sitting in the "code" field
+            // instead of "ean" — matching the incoming EAN against "code" too keeps
+            // those older items working without needing to be re-mapped by hand.
+            (rawEanLower && (it.aliases || []).some((a) => a.channel === indentPlatform && a.code && a.code.toLowerCase() === rawEanLower)) ||
+            it.name.toLowerCase() === r.rawName.toLowerCase()
+          );
           // Each distinct article code gets its own alias — even when it shares a base
           // item with another article on the same channel (e.g. two different pack sizes).
           if (match) onEnsureAlias(match.id, indentPlatform, r.rawCode, r.rawEan);
@@ -2843,8 +2881,11 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   const getRowAlias = (r) => {
     const item = getMappedItem(r.mappedItemId);
     if (!item) return null;
-    const byCode = (item.aliases || []).find((a) => a.channel === pendingIndent?.platform && a.code && r.rawCode && a.code.toLowerCase() === r.rawCode.toLowerCase());
-    return byCode || (item.aliases || []).find((a) => a.channel === pendingIndent?.platform) || null;
+    const byEan = r.rawEan && (item.aliases || []).find((a) => a.channel === pendingIndent?.platform && a.ean && a.ean.toLowerCase() === r.rawEan.toLowerCase());
+    // Flipkart's code isn't a reliable article identifier (see indent matching
+    // above), so it's never used to pick which pack-size alias a row belongs to.
+    const byCode = pendingIndent?.platform !== 'Flipkart' && (item.aliases || []).find((a) => a.channel === pendingIndent?.platform && a.code && r.rawCode && a.code.toLowerCase() === r.rawCode.toLowerCase());
+    return byEan || byCode || (item.aliases || []).find((a) => a.channel === pendingIndent?.platform) || null;
   };
   const getPackSize = (r) => getRowAlias(r)?.packSize || '';
   const isRowReady = (r) => !!r.mappedItemId && Number(getPackSize(r)) > 0;
