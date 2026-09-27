@@ -2398,6 +2398,7 @@ function ItemForm({ initial, onSave, onCancel }) {
   const [name, setName] = useState(initial?.name || '');
   const [uom, setUom] = useState(initial?.uom || 'kg');
   const [category, setCategory] = useState(initial?.category || 'VEGETABLES');
+  const [buffer, setBuffer] = useState(initial?.buffer != null ? String(initial.buffer) : '');
   const [aliases, setAliases] = useState((initial?.aliases || []).map((a) => ({ ...a })));
 
   const addAliasRow = () => setAliases((p) => [...p, { id: newAliasId(), channel: '', code: '', packSize: '', packUnit: 'kg' }]);
@@ -2411,6 +2412,7 @@ function ItemForm({ initial, onSave, onCancel }) {
       name: name.trim(),
       uom,
       category,
+      buffer: Number(buffer) || 0,
       aliases: aliases.filter((a) => a.channel.trim()).map((a) => ({ ...a, channel: a.channel.trim(), code: a.code.trim() })),
     });
   };
@@ -2434,6 +2436,12 @@ function ItemForm({ initial, onSave, onCancel }) {
 
         <div style={smallLabel}>CATEGORY</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 10 }}>{CATEGORY_OPTIONS.map((c) => <Chip key={c} label={c} active={category === c} onClick={() => setCategory(c)} />)}</div>
+
+        <div style={smallLabel}>BUFFER STOCK ({uom})</div>
+        <Field type="number" placeholder="0" value={buffer} onChange={(e) => setBuffer(e.target.value)} />
+        <div style={{ ...hint, marginTop: -4, marginBottom: 10 }}>
+          A safety margin to always keep in hand — this item keeps showing in Purchases (with this much added to what's needed) until stock covers demand plus this buffer.
+        </div>
 
         <div style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12, marginTop: 4 }}>
           <div style={sectionTitle}>Channel aliases</div>
@@ -2573,7 +2581,7 @@ function ItemsTab({ items, onAdd, onAddBulk, onUpdate, onDelete }) {
               </div>
             )}
           </div>
-          <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{it.id} · {it.uom} · {it.category}</div>
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{it.id} · {it.uom} · {it.category}{it.buffer ? ` · Buffer ${it.buffer} ${it.uom}` : ''}</div>
           <div style={{ marginTop: 8 }}>
             {(it.aliases && it.aliases.length > 0) ? (
               <div style={{ display: 'flex', flexWrap: 'wrap' }}>{it.aliases.map((a) => <AliasChip key={a.id} alias={a} />)}</div>
@@ -3387,11 +3395,15 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
         const needed = neededByProduct[it.name].needed;
         const unit = neededByProduct[it.name].unit;
         const stock = stockByItem[it.name] || 0;
-        const toBuy = Math.max(0, Math.round((needed - stock) * 100) / 100);
-        return { ...it, needed, unit, stock, toBuy };
+        const buffer = Number(it.buffer) || 0;
+        // Buffer is a safety margin on top of actual demand — the item keeps
+        // showing (and the buy quantity keeps including it) until stock covers
+        // both the order and the buffer, not just the order alone.
+        const toBuy = Math.max(0, Math.round((needed + buffer - stock) * 100) / 100);
+        return { ...it, needed, unit, stock, buffer, toBuy };
       })
-      // Already sufficiently stocked — no need to buy right now.
-      .filter((it) => it.stock <= it.needed);
+      // Already sufficiently stocked (covers demand + buffer) — no need to buy right now.
+      .filter((it) => it.stock <= it.needed + it.buffer);
     if (qtySort === 'asc') result = result.slice().sort((a, b) => a.toBuy - b.toBuy);
     else if (qtySort === 'desc') result = result.slice().sort((a, b) => b.toBuy - a.toBuy);
     return result;
@@ -3410,7 +3422,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     const needed = neededByProduct[it?.name]?.needed || 0;
     const unit = neededByProduct[it?.name]?.unit || it?.uom;
     const stock = stockByItem[it?.name] || 0;
-    const toBuy = Math.max(0, Math.round((needed - stock) * 100) / 100);
+    const buffer = Number(it?.buffer) || 0;
+    const toBuy = Math.max(0, Math.round((needed + buffer - stock) * 100) / 100);
     const mappedVendors = vendors.filter((v) => (v.itemIds || []).includes(it?.id));
     const dropdownVendors = mappedVendors.length === 0 || showAllVendorsInDropdown ? vendors : mappedVendors;
     return (
@@ -3432,6 +3445,13 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
               <div style={{ fontSize: 14, fontWeight: 800, color: INK }}>{stock}</div>
               <div style={{ fontSize: 10, color: MUTED, marginTop: 1 }}>{unit}</div>
             </div>
+            {buffer > 0 && (
+              <div style={{ flex: 1, border: `1px solid ${LINE}`, borderRadius: 8, padding: '8px 10px' }}>
+                <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>BUFFER</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: INK }}>{buffer}</div>
+                <div style={{ fontSize: 10, color: MUTED, marginTop: 1 }}>{unit}</div>
+              </div>
+            )}
             <div style={{ flex: 1, border: `1px solid ${TOMATO}`, background: '#FBEAE3', borderRadius: 8, padding: '8px 10px' }}>
               <div style={{ fontSize: 10, color: TOMATO, fontWeight: 700 }}>TO BUY</div>
               <div style={{ fontSize: 14, fontWeight: 800, color: TOMATO }}>{toBuy}</div>
