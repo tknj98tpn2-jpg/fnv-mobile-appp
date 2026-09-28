@@ -511,6 +511,103 @@ export default function FnvMobilePreview() {
     if (visibleNav[0]) setTab(visibleNav[0].key);
   }, [currentUser, tab, visibleNav]);
 
+  // ── Zoom lock ─────────────────────────────────────────────
+  // Pinch/double-tap zoom is what makes this feel like a browser tab instead of
+  // an installed app. The viewport meta + touch-action cover most browsers;
+  // Safari on iOS still fires its own 'gesturestart'/'gesturechange' events for a
+  // pinch even when both of those say no, so that's blocked directly too, along
+  // with the double-tap-to-zoom fallback some older engines still honor.
+  useEffect(() => {
+    let meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'viewport');
+      document.head.appendChild(meta);
+    }
+    const prevContent = meta.getAttribute('content');
+    meta.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
+
+    const style = document.createElement('style');
+    style.setAttribute('data-fnv-zoom-lock', '1');
+    style.textContent = 'html, body { touch-action: pan-x pan-y; }';
+    document.head.appendChild(style);
+
+    const blockGesture = (e) => e.preventDefault();
+    const blockPinchTouch = (e) => { if (e.touches && e.touches.length > 1) e.preventDefault(); };
+    let lastTouchEnd = 0;
+    const blockDoubleTapZoom = (e) => {
+      const now = Date.now();
+      if (now - lastTouchEnd <= 300) e.preventDefault();
+      lastTouchEnd = now;
+    };
+    document.addEventListener('gesturestart', blockGesture, { passive: false });
+    document.addEventListener('gesturechange', blockGesture, { passive: false });
+    document.addEventListener('touchmove', blockPinchTouch, { passive: false });
+    document.addEventListener('touchend', blockDoubleTapZoom, { passive: false });
+
+    return () => {
+      document.removeEventListener('gesturestart', blockGesture);
+      document.removeEventListener('gesturechange', blockGesture);
+      document.removeEventListener('touchmove', blockPinchTouch);
+      document.removeEventListener('touchend', blockDoubleTapZoom);
+      style.remove();
+      if (prevContent) meta.setAttribute('content', prevContent);
+    };
+  }, []);
+
+  // ── Swipe-back gesture ───────────────────────────────────
+  // Remembers which sections were visited, in order, so an edge-swipe (like
+  // iOS's native back gesture) can return to whichever one was open before the
+  // current tab — not just a fixed "home" section.
+  const tabHistoryRef = useRef(['dashboard']);
+  const swipeBackRef = useRef(false);
+  useEffect(() => {
+    if (swipeBackRef.current) { swipeBackRef.current = false; return; }
+    const hist = tabHistoryRef.current;
+    if (hist[hist.length - 1] !== tab) {
+      hist.push(tab);
+      if (hist.length > 20) hist.shift();
+    }
+  }, [tab]);
+  const goBackTab = () => {
+    const hist = tabHistoryRef.current;
+    if (hist.length <= 1) return;
+    hist.pop();
+    swipeBackRef.current = true;
+    setTab(hist[hist.length - 1]);
+  };
+  // Only starts tracking a swipe that begins right at the screen's left edge —
+  // same rule iOS uses — so it never hijacks an ordinary swipe/scroll started
+  // in the middle of a list or a table.
+  const edgeSwipeRef = useRef(null); // { startX, startY }
+  const onFrameTouchStart = (e) => {
+    if (drawerOpen || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t.clientX > 24) return;
+    edgeSwipeRef.current = { startX: t.clientX, startY: t.clientY };
+  };
+  const onFrameTouchEnd = (e) => {
+    if (!edgeSwipeRef.current) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - edgeSwipeRef.current.startX;
+    const dy = t.clientY - edgeSwipeRef.current.startY;
+    edgeSwipeRef.current = null;
+    if (dx > 70 && Math.abs(dy) < 50) goBackTab();
+  };
+  // Swipe left anywhere on the open drawer to dismiss it, same as tapping the
+  // backdrop — the natural gesture for a panel that slid in from the left.
+  const drawerSwipeRef = useRef(null);
+  const onDrawerTouchStart = (e) => {
+    if (e.touches.length !== 1) return;
+    drawerSwipeRef.current = { startX: e.touches[0].clientX };
+  };
+  const onDrawerTouchEnd = (e) => {
+    if (!drawerSwipeRef.current) return;
+    const dx = e.changedTouches[0].clientX - drawerSwipeRef.current.startX;
+    drawerSwipeRef.current = null;
+    if (dx < -60) setDrawerOpen(false);
+  };
+
   const fbUpdate = (col, id, patch)  => updateDoc(doc(db, col, id), patch);
   const fbDelete = (col, id)         => deleteDoc(doc(db, col, id));
   const fbSetDoc = (col, id, obj)    => setDoc(doc(db, col, id), obj);
@@ -802,7 +899,10 @@ export default function FnvMobilePreview() {
     <div style={isRealPhone
       ? { display: 'flex', justifyContent: 'center', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }
       : { display: 'flex', justifyContent: 'center', padding: '24px 12px', fontFamily: '"Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <div style={isRealPhone
+      <div
+        onTouchStart={onFrameTouchStart}
+        onTouchEnd={onFrameTouchEnd}
+        style={isRealPhone
         ? { width: '100%', height: '100vh', background: BG, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }
         : { width: 390, height: 760, background: BG, borderRadius: 34, border: `8px solid ${INK}`, boxShadow: '0 20px 50px rgba(0,0,0,0.18)', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
         {/* On a real phone the device's own status bar is already visible above this
@@ -887,7 +987,7 @@ export default function FnvMobilePreview() {
 
         {drawerOpen && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
-            <div style={{ width: 250, background: SIDEBAR, height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <div onTouchStart={onDrawerTouchStart} onTouchEnd={onDrawerTouchEnd} style={{ width: 250, background: SIDEBAR, height: '100%', display: 'flex', flexDirection: 'column' }}>
               <div style={{ padding: '18px 18px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                   <img src={LOGO_DATA_URI} alt="Nilgiri" style={{ width: 22, height: 'auto', display: 'block', filter: 'brightness(0) invert(1)', opacity: 0.92 }} />
@@ -2959,6 +3059,8 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           product: item.name,
           itemId: item.id,
           articleName: r.rawName,
+          rawCode: r.rawCode || '',
+          rawEan: r.rawEan || '',
           qty: storeQty,
           unit: item.uom,
           status: 'pending',
@@ -2966,6 +3068,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           packQty: storePacks,
           packSize,
           packUnit,
+          rawUnit: r.unit || '',
           isAdvance: !!pendingIndent.isAdvance,
           batchId,
         });
@@ -5296,7 +5399,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
       const key = hasPack ? `${cityKey}__${dateKey}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${o.product}__${o.unit}`;
       map[dateKey][key] = map[dateKey][key] || {
         key, product: o.product, articleName: o.articleName || o.product, unit: o.unit, qty: 0, platforms: new Set(),
-        pendingIds: [], orderIds: [], hasPack, packSize: o.packSize, packUnit: o.packUnit, targetPacks: 0,
+        pendingIds: [], orderIds: [], hasPack, packSize: o.packSize, packUnit: o.packUnit, rawUnit: o.rawUnit || '', targetPacks: 0,
       };
       map[dateKey][key].qty += o.qty;
       map[dateKey][key].platforms.add(o.platform);
@@ -5419,7 +5522,7 @@ function PackagingInlineRow({ target: t, progress, onSave, onAdvanceMany, onOpen
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 13 }}>{t.articleName || t.product}</div>
           <div style={{ fontSize: 10.5, color: MUTED }}>
-            {[...t.platforms].join(' + ')}{t.hasPack ? ` · ${t.packSize}${t.packUnit}/pack` : ''}
+            {[...t.platforms].join(' + ')}{t.hasPack ? ` · ${t.rawUnit || `${t.packSize}${t.packUnit}/pack`}` : ''}
           </div>
         </div>
         {t.hasPack ? (
@@ -5503,7 +5606,7 @@ function PackagingDetail({ target, progress, onSave, onBack }) {
         <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
           {[...target.platforms].join(' + ')} · {target.date === 'No date' ? 'No fulfilment date' : target.date}
         </div>
-        <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>Pack size: {target.packSize}{target.packUnit} per pack</div>
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>Pack size: {target.rawUnit || `${target.packSize}${target.packUnit} per pack`}</div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <div style={{ flex: 1, border: `1px solid ${LINE}`, borderRadius: 8, padding: '8px 10px' }}>
             <div style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>TARGET</div>
