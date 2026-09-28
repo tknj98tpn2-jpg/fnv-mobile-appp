@@ -2899,11 +2899,11 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
       rows: prev.rows.map((r) => {
         if (r.key !== key) return r;
         if (value === '__new__') {
-          const newItem = { id: `IT-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: r.rawName, uom: r.unit || 'kg', category: normalizeCategory(r.rawCategory), aliases: [{ id: newAliasId(), channel: prev.platform, code: r.rawCode || '', packSize: '', packUnit: 'kg' }] };
+          const newItem = { id: `IT-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: r.rawName, uom: r.unit || 'kg', category: normalizeCategory(r.rawCategory), aliases: [{ id: newAliasId(), channel: prev.platform, code: r.rawCode || '', ean: r.rawEan || '', packSize: '', packUnit: 'kg' }] };
           onAddItem(newItem);
           return { ...r, mappedItemId: newItem.id };
         }
-        onEnsureAlias(value, prev.platform, r.rawCode);
+        onEnsureAlias(value, prev.platform, r.rawCode, r.rawEan);
         return { ...r, mappedItemId: value };
       }),
     }));
@@ -3098,7 +3098,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
                     <input type="checkbox" checked={selectedRowKeys.has(r.key)} onChange={() => toggleRowSelected(r.key)} style={{ marginTop: 3 }} />
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{r.rawName}</div>
-                      <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 6px' }}>Qty {r.qty} · UOM {r.unit || '—'} · Code {r.rawCode || '—'} · {r.rawCategory || '—'}</div>
+                      <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 6px' }}>Qty {r.qty} · UOM {r.unit || '—'} · {EAN_ONLY_PLATFORMS.has(pendingIndent.platform) ? 'EAN' : 'Code'} {(EAN_ONLY_PLATFORMS.has(pendingIndent.platform) ? r.rawEan : r.rawCode) || '—'} · {r.rawCategory || '—'}</div>
                       <div style={smallLabel}>Map to item</div>
                       <select
                         value={r.mappedItemId || ''}
