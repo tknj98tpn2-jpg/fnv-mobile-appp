@@ -72,7 +72,11 @@ const STATUS_COLORS = {
   neutral: { bg: '#F1EFE6', fg: MUTED },
 };
 
-const PLATFORMS = ['Blinkit', 'Flipkart'];
+const PLATFORMS = ['Blinkit', 'Flipkart', 'Zepto'];
+// Channels whose own item code is not a reliable identifier (it can be
+// reissued on a relisting, or — for Zepto — is an internal UUID rather than a
+// stable article code) — matching for these channels relies on EAN only.
+const EAN_ONLY_PLATFORMS = new Set(['Flipkart', 'Zepto']);
 
 // Each indent can be split across dark stores (Flipkart lists one column per store);
 // Blinkit has a single store. Orders carry a `store`; older orders without one fall back
@@ -205,7 +209,7 @@ function pickField(rowObj, candidates) {
   }
   return '';
 }
-const KNOWN_INDENT_HEADERS = new Set(['fsn', 'title', 'category', 'type', 'umo', 'uom', 'unit', 'mrp', 'price', 't100t500fsn', 'eancode', 'shelflifedays', 'shelflife', 'temperaturezone', 'itemcode', 'articlecode', 'productcode', 'sku', 'code', 'productdescription', 'description', 'article', 'product', 'item', 'indent', 'qty', 'quantity', 'orderedqty']);
+const KNOWN_INDENT_HEADERS = new Set(['fsn', 'title', 'category', 'type', 'umo', 'uom', 'unit', 'mrp', 'price', 't100t500fsn', 'eancode', 'shelflifedays', 'shelflife', 'temperaturezone', 'itemcode', 'articlecode', 'productcode', 'sku', 'code', 'productdescription', 'description', 'article', 'product', 'item', 'productname', 'indent', 'qty', 'quantity', 'orderedqty', 'finalindent', 'storename', 'storeid', 'subcategory', 'vendername', 'city', 'cc', 'bb', 'rr']);
 function sumUnknownNumericColumns(rowObj, headers) {
   // Returns { "<store column header>": qty } for every leftover numeric column with a
   // positive value, or null when there is none.
@@ -223,17 +227,20 @@ function sumUnknownNumericColumns(rowObj, headers) {
 }
 
 function parseIndentRows(json, platform) {
-  return json
+  const parsed = json
     .map((r, idx) => {
       const headers = Object.keys(r);
-      const rawName = String(pickField(r, ['title', 'article', 'product', 'item', 'description']) || '').trim();
+      const rawName = String(pickField(r, ['productname', 'title', 'article', 'product', 'item', 'description']) || '').trim();
       // Articles are matched on the channel's own SKU/FSN — that is also what the
-      // GRN and PO exports carry, so one code ties the whole chain together.
+      // GRN and PO exports carry, so one code ties the whole chain together
+      // (except for EAN_ONLY_PLATFORMS, where the code is never used to match).
       const rawCode = String(pickField(r, ['fsn', 'itemcode', 'articlecode', 'productcode', 'sku', 'code']) || '').trim();
-      // The EAN is kept separately: it is the retail barcode, used only for
-      // printing labels, never for matching.
+      // The EAN is the article's permanent retail barcode — the primary
+      // matching key for EAN_ONLY_PLATFORMS, and always used for labels.
       const rawEan = String(pickField(r, ['eancode', 'ean']) || '').trim();
-      let qty = Number(pickField(r, ['indent', 'qty', 'quantity', 'orderedqty']) || 0);
+      // "Final Indent" (Zepto) always wins over a plain "Indent" column when a
+      // sheet has both — checked before the generic 'indent' keyword.
+      let qty = Number(pickField(r, ['finalindent', 'indent', 'qty', 'quantity', 'orderedqty']) || 0);
       let storeQtys = null;
       if (!qty) {
         const st = sumUnknownNumericColumns(r, headers);
@@ -241,9 +248,35 @@ function parseIndentRows(json, platform) {
       }
       const unit = String(pickField(r, ['umo', 'uom', 'unit']) || '').trim();
       const rawCategory = String(pickField(r, ['type', 'category']) || '').trim();
-      return { key: `row-${idx}-${rawName}`, rawName, rawCode, rawEan, qty, unit, rawCategory, storeQtys };
+      // Zepto lists one row per (article, dark store) rather than one row per
+      // article with a column per store — the store itself is a named column.
+      const rawStore = String(pickField(r, ['storename', 'store']) || '').trim();
+      return { key: `row-${idx}-${rawName}`, rawName, rawCode, rawEan, qty, unit, rawCategory, storeQtys, rawStore };
     })
     .filter((r) => r.rawName && r.qty > 0);
+
+  // Fold "one row per (article, store)" back into "one row per article" with a
+  // per-store quantity map — matching the shape a per-store-column format
+  // already produces — so the mapping table shows one line per article
+  // instead of one per store, and every store's demand still becomes its own
+  // order downstream.
+  const hasStoreRows = parsed.some((r) => r.rawStore && !r.storeQtys);
+  if (!hasStoreRows) return parsed;
+  const groups = {};
+  const order = [];
+  parsed.forEach((r) => {
+    if (!r.rawStore || r.storeQtys) { order.push(r); return; }
+    const groupKey = r.rawEan ? `ean:${r.rawEan.toLowerCase()}` : `name:${r.rawName.toLowerCase()}__${r.rawCode.toLowerCase()}`;
+    if (!groups[groupKey]) {
+      const merged = { ...r, storeQtys: {} };
+      groups[groupKey] = merged;
+      order.push(merged);
+    }
+    const g = groups[groupKey];
+    g.storeQtys[r.rawStore] = (g.storeQtys[r.rawStore] || 0) + r.qty;
+    g.qty = Object.values(g.storeQtys).reduce((s, v) => s + v, 0);
+  });
+  return order;
 }
 
 // ---------- shared small UI ----------
@@ -509,7 +542,7 @@ export default function FnvMobilePreview() {
     // field, never compared against.
     const eanLower = ean ? String(ean).toLowerCase() : '';
     const rawCodeLower = code ? code.toLowerCase() : '';
-    const codeLower = channel === 'Flipkart' ? '' : rawCodeLower;
+    const codeLower = EAN_ONLY_PLATFORMS.has(channel) ? '' : rawCodeLower;
     const existing = (it.aliases || []).find((a) => a.channel === channel && (
       (eanLower && a.ean && String(a.ean).toLowerCase() === eanLower) ||
       (codeLower && a.code && a.code.toLowerCase() === codeLower)
@@ -1409,30 +1442,28 @@ function DashboardTab({ orders, purchases, crates, packingProgress, dispatchLog 
   const today = todayLocalDate();
   const todayTrips = dispatchLog.filter((d) => d.date === today).length;
   const todaySpend = purchases.filter((p) => p.date === today).reduce((s, p) => s + p.cost, 0);
-  const blinkitProgress = computeChannelDayProgress(orders, packingProgress, 'Blinkit', today);
-  const flipkartProgress = computeChannelDayProgress(orders, packingProgress, 'Flipkart', today);
+  // One progress card per platform (Blinkit, Flipkart, Zepto, and any future
+  // channel) — driven off PLATFORMS so a new channel shows up here automatically.
+  const channelProgress = PLATFORMS.map((p) => ({ platform: p, progress: computeChannelDayProgress(orders, packingProgress, p, today) }));
   return (
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 10 }}>
         <div style={{ ...sectionTitle, marginBottom: 10 }}>Today's progress</div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <ChannelProgressRings channel="Blinkit" {...blinkitProgress} />
-          <ChannelProgressRings channel="Flipkart" {...flipkartProgress} />
+          {channelProgress.map(({ platform: p, progress }) => (
+            <ChannelProgressRings key={p} channel={p} {...progress} />
+          ))}
         </div>
       </Card>
       <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-        <Card style={{ flex: 1 }}>
-          <div style={hint}>Blinkit</div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>{blinkitProgress.indentPacks}</div>
-          <div style={{ fontSize: 10, color: MUTED, marginTop: -2, marginBottom: 4 }}>total indent</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: LEAF }}>{blinkitProgress.packedPacks} packed</div>
-        </Card>
-        <Card style={{ flex: 1 }}>
-          <div style={hint}>Flipkart</div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>{flipkartProgress.indentPacks}</div>
-          <div style={{ fontSize: 10, color: MUTED, marginTop: -2, marginBottom: 4 }}>total indent</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: LEAF }}>{flipkartProgress.packedPacks} packed</div>
-        </Card>
+        {channelProgress.map(({ platform: p, progress }) => (
+          <Card key={p} style={{ flex: 1 }}>
+            <div style={hint}>{p}</div>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{progress.indentPacks}</div>
+            <div style={{ fontSize: 10, color: MUTED, marginTop: -2, marginBottom: 4 }}>total indent</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: LEAF }}>{progress.packedPacks} packed</div>
+          </Card>
+        ))}
       </div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
         <Card style={{ flex: 1 }}><div style={hint}>Total trips today</div><div style={{ fontSize: 22, fontWeight: 800, color: LEAF }}>{todayTrips}</div></Card>
@@ -2398,10 +2429,14 @@ function AliasRowMobile({ alias, onChange, onRemove }) {
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, marginBottom: 6 }}>
       <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-        <Field placeholder="Channel (e.g. Blinkit)" value={alias.channel} onChange={(e) => onChange({ ...alias, channel: e.target.value })} style={{ flex: 1, marginBottom: 0 }} />
+        <select value={alias.channel} onChange={(e) => onChange({ ...alias, channel: e.target.value })} style={{ flex: 1, borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 6px' }}>
+          <option value="">Channel</option>
+          {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
         <button onClick={onRemove} style={{ background: 'none', border: 'none', color: TOMATO, cursor: 'pointer', padding: 4 }}><Trash2 size={14} /></button>
       </div>
       <Field placeholder="Item code" value={alias.code} onChange={(e) => onChange({ ...alias, code: e.target.value })} style={{ marginBottom: 6 }} />
+      <Field placeholder="EAN" value={alias.ean || ''} onChange={(e) => onChange({ ...alias, ean: e.target.value })} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <Field placeholder="Pack size" type="number" value={alias.packSize} onChange={(e) => onChange({ ...alias, packSize: e.target.value })} style={{ flex: 1, marginBottom: 0 }} />
         <select value={alias.packUnit || 'kg'} onChange={(e) => onChange({ ...alias, packUnit: e.target.value })} style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 6px' }}>
@@ -2821,7 +2856,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           // is never used to auto-match an indent row; only the EAN (the item's
           // permanent retail barcode) and, failing that, the article name are used.
           // Blinkit is unaffected and still matches on its code as before.
-          const useCodeMatch = indentPlatform !== 'Flipkart';
+          const useCodeMatch = !EAN_ONLY_PLATFORMS.has(indentPlatform);
           const match = items.find((it) =>
             (rawEanLower && (it.aliases || []).some((a) => a.channel === indentPlatform && a.ean && String(a.ean).toLowerCase() === rawEanLower)) ||
             (useCodeMatch && r.rawCode && (it.aliases || []).some((a) => a.channel === indentPlatform && a.code && a.code.toLowerCase() === r.rawCode.toLowerCase())) ||
@@ -2884,7 +2919,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     const byEan = r.rawEan && (item.aliases || []).find((a) => a.channel === pendingIndent?.platform && a.ean && a.ean.toLowerCase() === r.rawEan.toLowerCase());
     // Flipkart's code isn't a reliable article identifier (see indent matching
     // above), so it's never used to pick which pack-size alias a row belongs to.
-    const byCode = pendingIndent?.platform !== 'Flipkart' && (item.aliases || []).find((a) => a.channel === pendingIndent?.platform && a.code && r.rawCode && a.code.toLowerCase() === r.rawCode.toLowerCase());
+    const byCode = !EAN_ONLY_PLATFORMS.has(pendingIndent?.platform) && (item.aliases || []).find((a) => a.channel === pendingIndent?.platform && a.code && r.rawCode && a.code.toLowerCase() === r.rawCode.toLowerCase());
     return byEan || byCode || (item.aliases || []).find((a) => a.channel === pendingIndent?.platform) || null;
   };
   const getPackSize = (r) => getRowAlias(r)?.packSize || '';
