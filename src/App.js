@@ -398,6 +398,7 @@ export default function FnvMobilePreview() {
   const [dispatchLog, setDispatchLog] = useState([]);
   const [indentBatches, setIndentBatches] = useState([]);
   const [packingProgress, setPackingProgress] = useState({}); // { [targetKey]: packedPacks }
+  const [packingAssignments, setPackingAssignments] = useState({}); // { [targetKey]: { assignedTo, assignedToName } }
   const [stockCounts, setStockCounts] = useState([]); // nightly closing-stock entries, one per item per date
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
@@ -459,7 +460,16 @@ export default function FnvMobilePreview() {
       setPackingProgress(map);
     });
 
-    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); };
+    // packing task assignments — same key as packingProgress, but a separate
+    // collection so saving a packed/short quantity never wipes who it's
+    // assigned to (packingProgress is written with a plain setDoc, not a merge).
+    const unsub4 = onSnapshot(collection(db, 'packingAssignments'), (snap) => {
+      const map = {};
+      snap.docs.forEach((d) => { map[d.id] = d.data(); });
+      setPackingAssignments(map);
+    });
+
+    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); };
   }, []);
 
   // ── Session — restore a saved login once the users list has loaded ──
@@ -790,6 +800,12 @@ export default function FnvMobilePreview() {
       }
     });
   };
+  // A packing task lives in its own collection, separate from packingProgress —
+  // that one gets overwritten wholesale every time someone saves a packed/short
+  // count (see updatePackedQty above), so an assignment stored there would get
+  // wiped the next time the packer updates their own progress.
+  const assignPackingTask = (key, userId, userName) => fbSetDoc('packingAssignments', key, { assignedTo: userId, assignedToName: userName, city: effectiveCity });
+  const unassignPackingTask = (key) => fbDelete('packingAssignments', key);
   const toggleReleaseBatch = (batchId, purchaseDate) => {
     const batch = indentBatches.find((b) => b.id === batchId);
     if (!batch) return;
@@ -971,7 +987,7 @@ export default function FnvMobilePreview() {
               onDeletePayment={deleteSalesPayment}
             />
           )}
-          {tab === 'packaging' && <PackagingTab orders={cityOperationalOrders} items={cityItems} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} />}
+          {tab === 'packaging' && <PackagingTab orders={cityOperationalOrders} items={cityItems} onAdvanceMany={advanceMany} packingProgress={packingProgress} onUpdatePackedQty={updatePackedQty} packingAssignments={packingAssignments} onAssignTask={assignPackingTask} onUnassignTask={unassignPackingTask} users={users} roles={roles} currentUser={currentUser} />}
           {tab === 'dispatch' && (
             <DispatchTab orders={cityOperationalOrders} crates={cityCrates} dispatchLog={cityDispatchLog} indentBatches={cityIndentBatches} onDispatchBatch={dispatchBatch} />
           )}
@@ -5367,13 +5383,25 @@ function PricingTab({ orders, items, purchases, pricingConfig, city, onUpdate })
 
 
 
-function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdatePackedQty }) {
+function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdatePackedQty, packingAssignments, onAssignTask, onUnassignTask, users, roles, currentUser }) {
   const [platformFilter, setPlatformFilter] = usePersistedState('fnv_packaging_platform', 'All');
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_packaging_category', 'All');
   const [qtySort, setQtySort] = usePersistedState('fnv_packaging_qtysort', 'none'); // 'none' | 'asc' | 'desc'
   const [dateFilter, setDateFilter] = usePersistedState('fnv_packaging_date', '');
   const [selectedKey, setSelectedKey] = useState(null);
   const [itemSearch, setItemSearch] = useState('');
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+  const [assignModalKeys, setAssignModalKeys] = useState(null); // array of keys, or null when closed
+
+  const packerUsers = useMemo(() => {
+    const packerRoleIds = new Set(roles.filter((r) => (r.name || '').trim().toLowerCase() === 'packer').map((r) => r.id));
+    return users.filter((u) => packerRoleIds.has(u.roleId) && u.status === 'active');
+  }, [users, roles]);
+  const isPackerViewer = useMemo(() => {
+    const role = currentUser ? roles.find((r) => r.id === currentUser.roleId) : null;
+    return !!role && (role.name || '').trim().toLowerCase() === 'packer';
+  }, [currentUser, roles]);
 
   const categoryByProduct = useMemo(() => {
     const map = {};
@@ -5412,8 +5440,13 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
         let targets = Object.values(targetMap).map((t) => {
           const progress = packingProgress[t.key] || { packedQty: 0, shortQty: 0 };
           const isComplete = t.hasPack ? (progress.packedQty > 0 && progress.packedQty + progress.shortQty >= t.targetPacks) : (t.pendingIds.length === 0);
-          return { ...t, isComplete };
+          const assignment = packingAssignments[t.key] || null;
+          return { ...t, isComplete, assignedTo: assignment?.assignedTo || null, assignedToName: assignment?.assignedToName || '' };
         });
+        // A packer only ever sees the articles assigned to them — the tab stays a
+        // personal task queue for that role, while every other role keeps seeing
+        // everything (with an "assigned to" badge instead of a filter).
+        if (isPackerViewer && currentUser) targets = targets.filter((t) => t.assignedTo === currentUser.id);
         if (qtySort === 'asc') targets.sort((a, b) => (a.hasPack ? a.targetPacks : a.qty) - (b.hasPack ? b.targetPacks : b.qty));
         else if (qtySort === 'desc') targets.sort((a, b) => (b.hasPack ? b.targetPacks : b.qty) - (a.hasPack ? a.targetPacks : a.qty));
         const term = itemSearch.trim().toLowerCase();
@@ -5428,7 +5461,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
         if (b.date === 'No date') return -1;
         return a.date.localeCompare(b.date);
       });
-  }, [filteredOrders, qtySort, packingProgress, itemSearch]);
+  }, [filteredOrders, qtySort, packingProgress, itemSearch, packingAssignments, isPackerViewer, currentUser]);
 
   const categoriesPresent = useMemo(() => ['All', ...Array.from(new Set(items.map((it) => it.category).filter(Boolean)))], [items]);
 
@@ -5451,8 +5484,27 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
     );
   }
 
+  const toggleSelectKey = (key) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const exitSelectMode = () => { setSelectMode(false); setSelectedKeys(new Set()); };
+
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ padding: 16, paddingBottom: selectMode && selectedKeys.size > 0 ? 80 : 16 }}>
+      {!isPackerViewer && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+          <button
+            onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+            style={{ background: selectMode ? '#F3E7E2' : '#EAF3DE', color: selectMode ? TOMATO : LEAF_DARK, border: 'none', borderRadius: 999, padding: '6px 14px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}
+          >
+            {selectMode ? 'Cancel' : 'Select'}
+          </button>
+        </div>
+      )}
       <Card style={{ marginBottom: 12, padding: '10px 12px' }}>
         <div style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
           <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
@@ -5488,20 +5540,56 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
               onSave={(packedQty, shortQty) => onUpdatePackedQty(t.key, packedQty, shortQty, t.orderIds, t.targetPacks)}
               onAdvanceMany={onAdvanceMany}
               onOpenDetail={() => setSelectedKey(t.key)}
+              selectMode={selectMode}
+              selected={selectedKeys.has(t.key)}
+              onToggleSelect={() => toggleSelectKey(t.key)}
+              isPackerViewer={isPackerViewer}
+              onAssignRow={() => setAssignModalKeys([t.key])}
             />
           ))}
         </Card>
       ))}
       {groupedByDate.length === 0 && (
         <Card>
-          <div style={hint}>Nothing to pack right now.</div>
+          <div style={hint}>{isPackerViewer ? 'No items assigned to you right now.' : 'Nothing to pack right now.'}</div>
         </Card>
+      )}
+
+      {selectMode && selectedKeys.size > 0 && (
+        <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, background: '#fff', borderTop: `1px solid ${LINE}`, padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, zIndex: 150, boxShadow: '0 -2px 10px rgba(0,0,0,0.08)' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{selectedKeys.size} selected</div>
+          <button
+            onClick={() => setAssignModalKeys([...selectedKeys])}
+            style={{ background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 18px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <UserCheck size={14} /> Assign task
+          </button>
+        </div>
+      )}
+
+      {assignModalKeys && (
+        <AssignWorkerModal
+          keys={assignModalKeys}
+          packerUsers={packerUsers}
+          currentlyAssigned={assignModalKeys.length === 1 ? packingAssignments[assignModalKeys[0]] : null}
+          onClose={() => setAssignModalKeys(null)}
+          onAssign={(userId, userName) => {
+            assignModalKeys.forEach((k) => onAssignTask(k, userId, userName));
+            setAssignModalKeys(null);
+            exitSelectMode();
+          }}
+          onUnassign={() => {
+            assignModalKeys.forEach((k) => onUnassignTask(k));
+            setAssignModalKeys(null);
+            exitSelectMode();
+          }}
+        />
       )}
     </div>
   );
 }
 
-function PackagingInlineRow({ target: t, progress, onSave, onAdvanceMany, onOpenDetail }) {
+function PackagingInlineRow({ target: t, progress, onSave, onAdvanceMany, onOpenDetail, selectMode, selected, onToggleSelect, isPackerViewer, onAssignRow }) {
   const [packedValue, setPackedValue] = useState(String(progress.packedQty || ''));
   const [shortValue, setShortValue] = useState(String(progress.shortQty || ''));
   useEffect(() => { setPackedValue(String(progress.packedQty || '')); }, [progress.packedQty]);
@@ -5518,19 +5606,42 @@ function PackagingInlineRow({ target: t, progress, onSave, onAdvanceMany, onOpen
 
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0', background: isComplete ? '#EAF3DE' : 'transparent' }}>
-      <div onClick={() => t.hasPack && onOpenDetail()} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, cursor: t.hasPack ? 'pointer' : 'default' }}>
+      <div onClick={() => (selectMode ? onToggleSelect() : (t.hasPack && onOpenDetail()))} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, cursor: selectMode || t.hasPack ? 'pointer' : 'default' }}>
+        {selectMode && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={onToggleSelect}
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 18, height: 18, flexShrink: 0, accentColor: LEAF }}
+          />
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 13 }}>{t.articleName || t.product}</div>
           <div style={{ fontSize: 10.5, color: MUTED }}>
             {[...t.platforms].join(' + ')}{t.hasPack ? ` · ${t.rawUnit || `${t.packSize}${t.packUnit}/pack`}` : ''}
           </div>
+          {!isPackerViewer && (
+            t.assignedTo ? (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 3, background: '#EAF3DE', color: LEAF_DARK, fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999 }}>
+                <UserCheck size={10} /> {t.assignedToName || 'Assigned'}
+              </div>
+            ) : !selectMode ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); onAssignRow(); }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 3, background: 'none', border: `1px dashed ${LINE}`, color: MUTED, fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, cursor: 'pointer' }}
+              >
+                + Assign
+              </button>
+            ) : null
+          )}
         </div>
         {t.hasPack ? (
           <div style={{ color: LEAF, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>{t.targetPacks} packs</div>
         ) : (
           <div style={{ color: LEAF, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>{t.qty} {t.unit}</div>
         )}
-        {t.hasPack && <ChevronRight size={15} color={MUTED} style={{ flexShrink: 0 }} />}
+        {!selectMode && t.hasPack && <ChevronRight size={15} color={MUTED} style={{ flexShrink: 0 }} />}
       </div>
 
       {t.hasPack ? (
@@ -5637,6 +5748,44 @@ function PackagingDetail({ target, progress, onSave, onBack }) {
         )}
         <PrimaryBtn onClick={save} disabled={!canSave}>Save</PrimaryBtn>
       </Card>
+    </div>
+  );
+}
+
+function AssignWorkerModal({ keys, packerUsers, currentlyAssigned, onClose, onAssign, onUnassign }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 200 }}>
+      <div style={{ background: '#fff', borderRadius: '18px 18px 0 0', padding: '24px 20px 32px', width: '100%', maxWidth: 420, maxHeight: '75vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <div style={{ fontWeight: 800, fontSize: 16, display: 'flex', alignItems: 'center', gap: 6 }}><UserCheck size={16} /> Assign task</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, color: MUTED, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 14 }}>
+          {keys.length} article{keys.length === 1 ? '' : 's'} selected{currentlyAssigned?.assignedToName ? ` · currently assigned to ${currentlyAssigned.assignedToName}` : ''}
+        </div>
+
+        {packerUsers.length === 0 ? (
+          <div style={hint}>No active "Packer" role workers found. Add one in Users &amp; Roles first.</div>
+        ) : (
+          packerUsers.map((u) => (
+            <button
+              key={u.id}
+              onClick={() => onAssign(u.id, u.name)}
+              style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff', border: `1px solid ${LINE}`, borderRadius: 10, padding: '11px 12px', marginBottom: 8, cursor: 'pointer' }}
+            >
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{u.name}</span>
+              <ChevronRight size={15} color={MUTED} />
+            </button>
+          ))
+        )}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button onClick={onClose} style={{ flex: 1, background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: 10, padding: '11px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+          {currentlyAssigned && (
+            <button onClick={onUnassign} style={{ flex: 1, background: '#F3E7E2', color: TOMATO, border: 'none', borderRadius: 10, padding: '11px 0', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Unassign</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
