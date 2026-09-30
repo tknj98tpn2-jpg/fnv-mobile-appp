@@ -9,7 +9,7 @@ import {
   Menu, X, LayoutDashboard, Tag, Scissors, ClipboardList, ShoppingBag,
   PackageCheck, Truck, Truck as TruckIcon, Boxes, Users, Upload, FileSpreadsheet, AlertCircle,
   Trash2, Pencil, Plus, ChevronRight, ArrowLeft, Download, Store,
-  Search, Layers, IndianRupee, UserCheck, Wallet, RotateCcw,
+  Search, Layers, IndianRupee, UserCheck, Wallet, RotateCcw, Award,
 } from 'lucide-react';
 
 // ── Firebase — same project as the web admin panel, so data stays in sync ──
@@ -134,8 +134,8 @@ const SEED_PURCHASES = [];
 const SEED_RECIPES = [];
 
 const SEED_ROLES = [
-  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, advanceindent: true, purchase: true, stockcount: true, pricing: true, sales: true, staff: true, attendance: true, packaging: true, dispatch: true, crates: true, users: true } },
-  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, advanceindent: false, purchase: false, stockcount: true, pricing: false, sales: false, staff: false, attendance: true, packaging: true, dispatch: true, crates: true, users: false } },
+  { id: 'ROLE-ADMIN', name: 'Admin', permissions: { dashboard: true, items: true, vendors: true, cutprocess: true, orders: true, advanceindent: true, purchase: true, grading: true, stockcount: true, pricing: true, sales: true, staff: true, attendance: true, packaging: true, dispatch: true, crates: true, users: true } },
+  { id: 'ROLE-WAREHOUSE', name: 'Warehouse Staff', permissions: { dashboard: true, items: false, vendors: false, cutprocess: false, orders: false, advanceindent: false, purchase: false, grading: true, stockcount: true, pricing: false, sales: false, staff: false, attendance: true, packaging: true, dispatch: true, crates: true, users: false } },
 ];
 
 const SEED_USERS = [];
@@ -157,6 +157,7 @@ const NAV = [
   { key: 'cutprocess', label: 'Cut & Process', icon: Scissors },
   { key: 'orders', label: 'Orders', icon: ClipboardList },
   { key: 'purchase', label: 'Purchases', icon: ShoppingBag },
+  { key: 'grading', label: 'Grading', icon: Award },
   { key: 'stockcount', label: 'Stock Count', icon: Layers },
   { key: 'pricing', label: 'Pricing', icon: IndianRupee },
   { key: 'sales', label: 'Sales', icon: Wallet },
@@ -402,6 +403,7 @@ export default function FnvMobilePreview() {
   const [stockCounts, setStockCounts] = useState([]); // nightly closing-stock entries, one per item per date
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
+  const [gradingRecords, setGradingRecords] = useState([]); // per-item quality grading entries (Grade A / Grade B / Dump split)
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [salesPayments, setSalesPayments] = useState([]);
   const [staff, setStaff] = useState([]);
@@ -430,8 +432,8 @@ export default function FnvMobilePreview() {
       setDbReady(true);
     })();
 
-    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','pricingConfig','grnReports','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
-    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, pricingConfig: setPricingConfig, grnReports: setGrnReports, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
+    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','pricingConfig','grnReports','gradingRecords','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
+    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, pricingConfig: setPricingConfig, grnReports: setGrnReports, gradingRecords: setGradingRecords, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
 
     const unsubs = cols.map((col) =>
       onSnapshot(collection(db, col), (snap) => {
@@ -723,6 +725,8 @@ export default function FnvMobilePreview() {
     const id = `GRN-${channel.slice(0, 3).toUpperCase()}-${date}-${Date.now().toString(36).toUpperCase().slice(-6)}`;
     fbSetDoc('grnReports', id, { id, channel, date, fileName, uploadedAt: todayLocalDate(), rows, batchId: batchId || null });
   };
+  const saveGradingRecord = (record) => fbSetDoc('gradingRecords', record.id, { ...record, city: effectiveCity });
+  const deleteGradingRecord = (id) => fbDelete('gradingRecords', id);
   const addRecipe = (r) => fbSetDoc('recipes', r.id, r);
   const deleteRecipe = (id) => fbDelete('recipes', id);
   const adjustCrates = async (type, delta, note) => {
@@ -870,6 +874,7 @@ export default function FnvMobilePreview() {
   const currentNav = NAV.find((n) => n.key === tab);
   const cityItems = items.filter((it) => (it.city || CITIES[0]) === effectiveCity);
   const cityVendors = vendors.filter((v) => (v.city || CITIES[0]) === effectiveCity);
+  const cityGradingRecords = gradingRecords.filter((g) => (g.city || CITIES[0]) === effectiveCity);
   const citySalesInvoices = salesInvoices.filter((inv) => (inv.city || CITIES[0]) === effectiveCity);
   const citySalesPayments = salesPayments.filter((p) => (p.city || CITIES[0]) === effectiveCity);
   const cityStaff = staff.filter((s) => (s.city || CITIES[0]) === effectiveCity && s.status !== 'inactive');
@@ -966,6 +971,14 @@ export default function FnvMobilePreview() {
             />
           )}
           {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} />}
+          {tab === 'grading' && (
+            <GradingTabMobile
+              items={cityItems}
+              records={cityGradingRecords}
+              onSave={saveGradingRecord}
+              onDelete={deleteGradingRecord}
+            />
+          )}
           {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} onReset={resetStockCounts} />}
           {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
           {tab === 'sales' && (
@@ -5276,6 +5289,281 @@ function downloadPricingSheet(rows) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ── Grading ───────────────────────────────────────────────
+function formatLocalDateLocal(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function addDaysToDateStrLocal(dateStr, days) {
+  if (!dateStr) return '';
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + Number(days));
+  return formatLocalDateLocal(d);
+}
+// One item being entered before it's saved. Qty, Grade A and Grade B are
+// typed by hand; Dump is never typed — it's whatever is left of Qty once
+// Grade A and Grade B are accounted for.
+function GradingEntryCard({ row, onChange, onRemove }) {
+  const qtyNum = Number(row.qty) || 0;
+  const aNum = Number(row.gradeA) || 0;
+  const bNum = Number(row.gradeB) || 0;
+  const dump = Math.max(Math.round((qtyNum - aNum - bNum) * 100) / 100, 0);
+
+  // Typing the total qty resets Grade A to match it in full (nothing graded down yet).
+  const setQty = (v) => onChange({ ...row, qty: v, gradeA: v, gradeB: 0 });
+  // Editing Grade A pushes whatever is left over into Grade B automatically.
+  const setGradeA = (v) => {
+    const aVal = Number(v) || 0;
+    const remB = Math.max(Math.round((qtyNum - aVal) * 100) / 100, 0);
+    onChange({ ...row, gradeA: v, gradeB: remB });
+  };
+  // Editing Grade B just updates it — Dump below recomputes from the remainder.
+  const setGradeB = (v) => onChange({ ...row, gradeB: v });
+
+  return (
+    <Card style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{row.itemName}</div>
+          <div style={{ fontSize: 10, color: MUTED }}>{row.category}</div>
+        </div>
+        <button onClick={onRemove} style={{ background: 'none', border: 'none', color: TOMATO, cursor: 'pointer', display: 'flex' }} aria-label="Remove row"><Trash2 size={15} /></button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>QTY ({row.uom})</div>
+          <Field type="number" placeholder="0" value={row.qty} onChange={(e) => setQty(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>GRADE A</div>
+          <Field type="number" placeholder="0" value={row.gradeA} onChange={(e) => setGradeA(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>GRADE B</div>
+          <Field type="number" placeholder="0" value={row.gradeB} onChange={(e) => setGradeB(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>DUMP</div>
+          <div style={{ padding: '9px 10px', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, fontSize: 13, background: BG, color: MUTED, fontWeight: 700 }}>{dump} {row.uom}</div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// A saved grading record — read-only, with the same tap-to-arm delete used
+// throughout this app (ConfirmDeleteButton).
+function GradingRecordCard({ record, onRemove }) {
+  const pct = (n) => (record.qty > 0 ? Math.round((n / record.qty) * 1000) / 10 : 0);
+  return (
+    <Card style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{record.itemName}</div>
+        <ConfirmDeleteButton onConfirm={onRemove} title={`Remove ${record.itemName} grading`} />
+      </div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: TEXT_SECONDARY }}>
+        <span>Qty: <b style={{ color: INK }}>{record.qty} {record.uom}</b></span>
+        <span>Grade A: <b style={{ color: LEAF }}>{record.gradeA} {record.uom}</b> ({pct(record.gradeA)}%)</span>
+        <span>Grade B: <b style={{ color: AMBER }}>{record.gradeB} {record.uom}</b> ({pct(record.gradeB)}%)</span>
+        <span>Dump: <b style={{ color: TOMATO }}>{record.dump} {record.uom}</b> ({pct(record.dump)}%)</span>
+      </div>
+    </Card>
+  );
+}
+
+function GradingTabMobile({ items, records, onSave, onDelete }) {
+  const [view, setView] = useState('entry'); // 'entry' | 'reports'
+
+  // ---- Add Items / entry view ----
+  const [date, setDate] = useState(todayLocalDate());
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [rows, setRows] = useState([]);
+  const [saveMsg, setSaveMsg] = useState('');
+
+  const pickableItems = items.filter((it) => {
+    const q = search.trim().toLowerCase();
+    const notAdded = !rows.some((r) => r.itemId === it.id);
+    const matches = !q || it.name.toLowerCase().includes(q);
+    return notAdded && matches;
+  });
+
+  const addItemRow = (it) => {
+    setRows((prev) => [...prev, { key: `${it.id}-${Date.now()}`, itemId: it.id, itemName: it.name, category: it.category, uom: it.uom, qty: '', gradeA: '', gradeB: '' }]);
+    setSearch('');
+  };
+  const updateRow = (key, next) => setRows((prev) => prev.map((r) => (r.key === key ? next : r)));
+  const removeRow = (key) => setRows((prev) => prev.filter((r) => r.key !== key));
+
+  const saveAll = () => {
+    const valid = rows.filter((r) => Number(r.qty) > 0);
+    if (valid.length === 0) return;
+    valid.forEach((r) => {
+      const qtyNum = Number(r.qty) || 0;
+      const aNum = Number(r.gradeA) || 0;
+      const bNum = Number(r.gradeB) || 0;
+      const dump = Math.max(Math.round((qtyNum - aNum - bNum) * 100) / 100, 0);
+      const id = `GRAD-${r.itemId}-${date}-${Date.now().toString(36).toUpperCase().slice(-5)}`;
+      onSave({ id, date, itemId: r.itemId, itemName: r.itemName, category: r.category, uom: r.uom, qty: qtyNum, gradeA: aNum, gradeB: bNum, dump, createdAt: todayLocalDate() });
+    });
+    setRows([]);
+    setSaveMsg(`${valid.length} item${valid.length === 1 ? '' : 's'} saved for ${date}.`);
+    setTimeout(() => setSaveMsg(''), 4000);
+  };
+
+  const dayRecords = records.filter((r) => r.date === date);
+
+  // ---- Reports view ----
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [dateFrom, setDateFrom] = useState(() => addDaysToDateStrLocal(todayLocalDate(), -6));
+  const [dateTo, setDateTo] = useState(() => todayLocalDate());
+
+  const setQuickRange = (preset) => {
+    const today = todayLocalDate();
+    if (preset === '7d') {
+      setDateFrom(addDaysToDateStrLocal(today, -6));
+      setDateTo(today);
+    } else if (preset === 'thisMonth') {
+      const d = new Date(`${today}T00:00:00`);
+      setDateFrom(formatLocalDateLocal(new Date(d.getFullYear(), d.getMonth(), 1)));
+      setDateTo(today);
+    } else if (preset === 'lastMonth') {
+      const d = new Date(`${today}T00:00:00`);
+      setDateFrom(formatLocalDateLocal(new Date(d.getFullYear(), d.getMonth() - 1, 1)));
+      setDateTo(formatLocalDateLocal(new Date(d.getFullYear(), d.getMonth(), 0)));
+    }
+  };
+
+  const filteredRecords = records.filter((r) => {
+    const inCategory = categoryFilter === 'ALL' || r.category === categoryFilter;
+    const inRange = (!dateFrom || r.date >= dateFrom) && (!dateTo || r.date <= dateTo);
+    return inCategory && inRange;
+  });
+
+  const grouped = useMemo(() => {
+    const map = {};
+    filteredRecords.forEach((r) => {
+      if (!map[r.itemId]) map[r.itemId] = { itemId: r.itemId, itemName: r.itemName, category: r.category, uom: r.uom, count: 0, sumA: 0, sumB: 0, sumDump: 0, totalQty: 0 };
+      const qty = Number(r.qty) || 0;
+      const m = map[r.itemId];
+      m.count += 1;
+      m.totalQty += qty;
+      m.sumA += qty > 0 ? ((Number(r.gradeA) || 0) / qty) * 100 : 0;
+      m.sumB += qty > 0 ? ((Number(r.gradeB) || 0) / qty) * 100 : 0;
+      m.sumDump += qty > 0 ? ((Number(r.dump) || 0) / qty) * 100 : 0;
+    });
+    return Object.values(map)
+      .map((m) => ({ ...m, avgA: Math.round((m.sumA / m.count) * 10) / 10, avgB: Math.round((m.sumB / m.count) * 10) / 10, avgDump: Math.round((m.sumDump / m.count) * 10) / 10 }))
+      .sort((a, b) => a.itemName.localeCompare(b.itemName));
+  }, [filteredRecords]);
+
+  const categoryChips = ['ALL', ...CATEGORY_OPTIONS];
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        <button onClick={() => setView('entry')} style={{ flex: 1, padding: '10px 0', borderRadius: RADIUS.lg, border: `1px solid ${view === 'entry' ? LEAF : LINE}`, background: view === 'entry' ? LEAF : '#fff', color: view === 'entry' ? '#fff' : INK, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Add Grading</button>
+        <button onClick={() => setView('reports')} style={{ flex: 1, padding: '10px 0', borderRadius: RADIUS.lg, border: `1px solid ${view === 'reports' ? LEAF : LINE}`, background: view === 'reports' ? LEAF : '#fff', color: view === 'reports' ? '#fff' : INK, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Reports</button>
+      </div>
+
+      {view === 'entry' && (
+        <div>
+          <Card style={{ marginBottom: 14 }}>
+            <div style={sectionTitle}>Add Items</div>
+            <div style={hint}>Select items to grade for this date.</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>DATE</div>
+            <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+
+            {!pickerOpen ? (
+              <PrimaryBtn onClick={() => setPickerOpen(true)}>+ Add Item</PrimaryBtn>
+            ) : (
+              <div style={{ border: `1px solid ${LINE}`, borderRadius: RADIUS.lg, padding: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: BG, border: `1px solid ${LINE}`, borderRadius: 8, padding: '6px 10px', marginBottom: 8 }}>
+                  <Search size={14} color={MUTED} />
+                  <input autoFocus placeholder="Search items..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12, width: '100%' }} />
+                  <button onClick={() => { setPickerOpen(false); setSearch(''); }} style={{ background: 'none', border: 'none', color: MUTED, cursor: 'pointer', display: 'flex' }}><X size={14} /></button>
+                </div>
+                <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                  {pickableItems.map((it) => (
+                    <button key={it.id} onClick={() => addItemRow(it)} style={{ width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'none', border: 'none', borderBottom: `1px solid ${LINE}`, padding: '9px 4px', cursor: 'pointer' }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: INK }}>{it.name}</span>
+                      <span style={{ fontSize: 10, color: MUTED }}>{it.category}</span>
+                    </button>
+                  ))}
+                  {pickableItems.length === 0 && <p style={{ margin: '8px 0', fontSize: 12, color: MUTED, textAlign: 'center' }}>No items match.</p>}
+                </div>
+              </div>
+            )}
+            {saveMsg && <p style={{ margin: '10px 0 0', fontSize: 12, color: LEAF, fontWeight: 700 }}>{saveMsg}</p>}
+          </Card>
+
+          {rows.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              {rows.map((r) => (
+                <GradingEntryCard key={r.key} row={r} onChange={(next) => updateRow(r.key, next)} onRemove={() => removeRow(r.key)} />
+              ))}
+              <PrimaryBtn onClick={saveAll}>Save Grading</PrimaryBtn>
+            </div>
+          )}
+
+          {dayRecords.length > 0 && (
+            <div>
+              <div style={{ ...sectionTitle, marginBottom: 8 }}>Graded on {date} ({dayRecords.length})</div>
+              {dayRecords.map((r) => (
+                <GradingRecordCard key={r.id} record={r} onRemove={() => onDelete(r.id)} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === 'reports' && (
+        <div>
+          <Card style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 10 }}>
+              {categoryChips.map((c) => <Chip key={c} label={c === 'ALL' ? 'All' : c} active={categoryFilter === c} onClick={() => setCategoryFilter(c)} />)}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>FROM</div>
+                <Field type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ marginBottom: 0 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: MUTED, marginBottom: 4 }}>TO</div>
+                <Field type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ marginBottom: 0 }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button onClick={() => setQuickRange('7d')} style={{ padding: '7px 11px', borderRadius: 999, border: `1px solid ${LINE}`, background: '#fff', color: INK, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Last 7 Days</button>
+              <button onClick={() => setQuickRange('thisMonth')} style={{ padding: '7px 11px', borderRadius: 999, border: `1px solid ${LINE}`, background: '#fff', color: INK, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>This Month</button>
+              <button onClick={() => setQuickRange('lastMonth')} style={{ padding: '7px 11px', borderRadius: 999, border: `1px solid ${LINE}`, background: '#fff', color: INK, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Last Month</button>
+            </div>
+          </Card>
+
+          {grouped.length === 0 && (
+            <Card><p style={{ margin: 0, fontSize: 12, color: MUTED, textAlign: 'center' }}>No grading records in this range.</p></Card>
+          )}
+          {grouped.map((g) => (
+            <Card key={g.itemId} style={{ marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{g.itemName}</div>
+                <div style={{ fontSize: 10, color: MUTED }}>{g.category} · {g.count} entr{g.count === 1 ? 'y' : 'ies'} · {Math.round(g.totalQty * 100) / 100} {g.uom}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 14, fontSize: 12 }}>
+                <span style={{ color: LEAF, fontWeight: 700 }}>Grade A avg {g.avgA}%</span>
+                <span style={{ color: AMBER, fontWeight: 700 }}>Grade B avg {g.avgB}%</span>
+                <span style={{ color: TOMATO, fontWeight: 700 }}>Dump avg {g.avgDump}%</span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PricingCard({ article, config, onUpdate }) {
