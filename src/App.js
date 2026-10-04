@@ -4589,6 +4589,10 @@ function buildPricingArticles(orders, items, purchases, city, configByKey) {
         code: alias?.code || '',
         packSize: o.packSize,
         packUnit: o.packUnit,
+        // What the indent sheet itself called this article's unit (e.g. "2 Pieces") -
+        // shown on screen instead of the mapped pack size, which stays purely an
+        // internal conversion for pricing math and never surfaces here.
+        rawUnit: o.rawUnit || '',
         basePrice,
         autoBasePrice,
         hasBasePriceOverride: hasOverride,
@@ -5267,7 +5271,7 @@ function downloadPricingSheet(rows) {
   const sheetRows = rows.map((r) => ({
     'Product Name': r.articleName,
     'Channel Code (SKU)': r.code || '',
-    'UOM': `${r.packSize}${r.packUnit}/pack`,
+    'UOM': r.rawUnit || `${r.packSize}${r.packUnit}/pack`,
     'Base Price (₹)': r.basePrice ?? '',
     'Grading %': r.gradingPercent ?? 0,
     'Vendor Margin %': r.vendorMarginPercent ?? 0,
@@ -5601,7 +5605,7 @@ function PricingCard({ article, config, onUpdate }) {
   return (
     <Card style={{ marginBottom: 12 }}>
       <div style={{ fontWeight: 800, fontSize: 14 }}>{article.articleName}</div>
-      <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{article.code || 'No code'} · {article.packSize}{article.packUnit}/pack</div>
+      <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{article.code || 'No code'} · {article.rawUnit || `${article.packSize}${article.packUnit}/pack`}</div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
         <span style={{ fontSize: 11, color: MUTED, fontWeight: 700 }}>BASE PRICE</span>
         <span style={{ fontWeight: 700, color: basePrice == null ? MUTED : LEAF }}>{basePrice == null ? 'No purchase yet' : `₹${basePrice.toFixed(2)}`}</span>
@@ -6229,6 +6233,7 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
   const [view, setView] = useState('dispatch'); // 'dispatch' | 'history' | 'fills'
   const [channel, setChannel] = usePersistedState('fnv_dispatch_channel', PLATFORMS[0]);
   const [storeSel, setStoreSel] = usePersistedState('fnv_dispatch_store', '');
+  const [dispatchDate, setDispatchDate] = usePersistedState('fnv_dispatch_date', todayLocalDate());
   const [selected, setSelected] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [selectedFillBatchId, setSelectedFillBatchId] = useState(null);
@@ -6238,8 +6243,8 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
   const storeOptions = useMemo(() => storeOptionsFor(orders, activeChannel), [orders, activeChannel]);
   const activeStore = storeOptions.find((s) => s.value === storeSel) || storeOptions[0] || null;
   const visiblePacked = useMemo(
-    () => packed.filter((o) => o.platform === activeChannel && activeStore && orderStore(o) === activeStore.store),
-    [packed, activeChannel, activeStore],
+    () => packed.filter((o) => o.platform === activeChannel && activeStore && orderStore(o) === activeStore.store && (!dispatchDate || o.fulfilmentDate === dispatchDate)),
+    [packed, activeChannel, activeStore, dispatchDate],
   );
   const changeChannel = (c) => { setChannel(c); setStoreSel(''); setSelected([]); };
   const changeStore = (v) => { setStoreSel(v); setSelected([]); };
@@ -6287,6 +6292,22 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
       )}
 
       {view === 'dispatch' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <input
+            type="date"
+            value={dispatchDate}
+            onChange={(e) => setDispatchDate(e.target.value)}
+            style={{ flex: 1, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}
+          />
+          {dispatchDate !== todayLocalDate() && (
+            <button onClick={() => setDispatchDate(todayLocalDate())} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: '8px 2px', flexShrink: 0 }}>
+              Today
+            </button>
+          )}
+        </div>
+      )}
+
+      {view === 'dispatch' && (
         <>
           <Card style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
@@ -6307,7 +6328,7 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
                 </div>
               </div>
             ))}
-            {visiblePacked.length === 0 && <div style={hint}>Nothing packed yet for this store — resolve articles in Packaging first.</div>}
+            {visiblePacked.length === 0 && <div style={hint}>Nothing packed yet for this store{dispatchDate ? ` on ${dispatchDate}` : ''} — resolve articles in Packaging first, or pick a different date above.</div>}
           </Card>
         </>
       )}
