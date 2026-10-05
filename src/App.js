@@ -1092,8 +1092,8 @@ function computeChannelDayProgress(orders, packingProgress, platform, dateStr) {
     const hasPack = !!(o.packQty && o.packSize);
     const cityKey = o.city || CITIES[0];
     const key = hasPack
-      ? `${cityKey}__${dateStr}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`
-      : `${cityKey}__${dateStr}__${o.product}__${o.unit}`;
+      ? `${cityKey}__${dateStr}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`
+      : `${cityKey}__${dateStr}__${sanitizeKeyPart(o.product)}__${o.unit}`;
     if (!groups[key]) groups[key] = { key, hasPack, targetPacks: 0, doneViaStatus: 0 };
     if (hasPack) {
       groups[key].targetPacks += Number(o.packQty) || 0;
@@ -3402,6 +3402,14 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [view, setView] = useState('list'); // 'list' | 'purchased'
 
+  // Plain "order already placed to someone" marker - independent of the
+  // select-mode flow above (which is for building a new order to share).
+  // Persisted so it survives a reload, but it's a personal checklist aid
+  // only - not synced to Firestore, and "Reset items needing purchase"
+  // clears it too since that's the same "start this list over" action.
+  const [orderPlacedIds, setOrderPlacedIds] = usePersistedState('fnv_purchase_order_placed', []);
+  const toggleOrderPlaced = (id) => setOrderPlacedIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+
   // Multi-select / order sharing
   const [selectMode, setSelectMode] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState([]);
@@ -3988,7 +3996,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
-              onClick={() => { onResetPurchaseNeeds(allPurchaseNeedOrderIds); setConfirmingPurchaseReset(false); }}
+              onClick={() => { onResetPurchaseNeeds(allPurchaseNeedOrderIds); setOrderPlacedIds([]); setConfirmingPurchaseReset(false); }}
               disabled={!allPurchaseNeedOrderIds.length}
               style={{ flex: 1, background: allPurchaseNeedOrderIds.length ? TOMATO : '#E5E1D4', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}
             >
@@ -4025,12 +4033,20 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
 
         {filteredItems.map((it) => {
           const isSelected = selectMode && selectedItemIds.includes(it.id);
+          const isPlaced = orderPlacedIds.includes(it.id);
           return (
             <div
               key={it.id}
               onClick={() => selectMode ? toggleSelectItem(it.id) : openItem(it.id)}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderTop: `1px solid ${LINE}`, cursor: 'pointer', background: isSelected ? '#EAF3DE' : 'transparent', borderRadius: isSelected ? 8 : 0, padding: '9px 4px' }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderTop: `1px solid ${LINE}`, cursor: 'pointer', background: isSelected ? '#EAF3DE' : (isPlaced ? '#F0F7E8' : 'transparent'), borderRadius: (isSelected || isPlaced) ? 8 : 0, padding: '9px 4px' }}
             >
+              <div
+                onClick={(e) => { e.stopPropagation(); toggleOrderPlaced(it.id); }}
+                title="Mark order as placed"
+                style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${isPlaced ? LEAF : LINE}`, background: isPlaced ? LEAF : '#fff', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                {isPlaced && <div style={{ color: '#fff', fontSize: 12, fontWeight: 900 }}>✓</div>}
+              </div>
               {selectMode && (
                 <div style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${isSelected ? LEAF : LINE}`, background: isSelected ? LEAF : '#fff', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   {isSelected && <div style={{ color: '#fff', fontSize: 12, fontWeight: 900 }}>✓</div>}
@@ -4555,17 +4571,25 @@ function matchChannelRow(row, costRows, items) {
   }) || null;
 }
 
+// A handful of composite keys built below embed a raw item/product name and
+// are then used directly as a Firestore document id (packingProgress,
+// packingAssignments, pricingConfig). A "/" in that name (e.g. "Chinese Fried
+// Rice/Noodles Veggie Mix") would otherwise split into extra path segments
+// there, making the write throw and silently fail to save — swapped for a
+// visually-identical stand-in that Firestore treats as an ordinary character.
+const sanitizeKeyPart = (s) => String(s || '').replace(/\//g, '⁄');
+
 function buildPricingArticles(orders, items, purchases, city, configByKey) {
   const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
   const map = {};
   orders
     .filter((o) => o.packSize && o.packUnit)
     .forEach((o) => {
-      const key = `${city}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      const key = `${city}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
       // Pre-fix pricingConfig docs were saved without a city prefix at all, shared across
       // every city. Keeping this around lets a city inherit those old settings the first
       // time it prices this article, instead of silently resetting everyone to zero.
-      const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      const legacyKey = `${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
       if (map[key]) return;
       const item = items.find((it) => it.name === o.product);
       const byIdInfo = o.itemId ? latestUnitPriceByItem.byId[o.itemId] : null;
@@ -4605,8 +4629,8 @@ function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
   const batchOrders = orders.filter((o) => o.batchId === batch.id && !o.isAdvance);
   const batchCity = batch.city || CITIES[0];
   const rows = batchOrders.map((o) => {
-    const key = `${batchCity}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
-    const legacyKey = `${o.product}__${o.platform}__${o.packSize}__${o.packUnit}`;
+    const key = `${batchCity}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
+    const legacyKey = `${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
     const article = articlesByKey[key];
     const packSize = Number(o.packSize) || 1;
     const shortPacks = Math.min(Number(o.packQty) || 0, (Number(o.shortQty) || 0) / packSize);
@@ -5716,7 +5740,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
       map[dateKey] = map[dateKey] || {};
       const hasPack = !!(o.packQty && o.packSize);
       const cityKey = o.city || CITIES[0];
-      const key = hasPack ? `${cityKey}__${dateKey}__${o.product}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${o.product}__${o.unit}`;
+      const key = hasPack ? `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.unit}`;
       map[dateKey][key] = map[dateKey][key] || {
         key, product: o.product, articleName: o.articleName || o.product, unit: o.unit, qty: 0, platforms: new Set(),
         pendingIds: [], orderIds: [], hasPack, packSize: o.packSize, packUnit: o.packUnit, rawUnit: o.rawUnit || '', targetPacks: 0,
