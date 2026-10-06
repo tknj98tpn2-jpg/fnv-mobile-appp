@@ -1088,12 +1088,16 @@ function computeChannelDayProgress(orders, packingProgress, platform, dateStr) {
   const dispatchPercent = totalQty > 0 ? Math.min(100, Math.round((dispatchedQty / totalQty) * 100)) : 0;
 
   const groups = {};
-  dayOrders.forEach((o) => {
+  const dayKeyer = disambiguateByArticle(dayOrders, (o) => {
     const hasPack = !!(o.packQty && o.packSize);
     const cityKey = o.city || CITIES[0];
-    const key = hasPack
+    return hasPack
       ? `${cityKey}__${dateStr}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`
       : `${cityKey}__${dateStr}__${sanitizeKeyPart(o.product)}__${o.unit}`;
+  });
+  dayOrders.forEach((o) => {
+    const hasPack = !!(o.packQty && o.packSize);
+    const key = dayKeyer(o);
     if (!groups[key]) groups[key] = { key, hasPack, targetPacks: 0, doneViaStatus: 0 };
     if (hasPack) {
       groups[key].targetPacks += Number(o.packQty) || 0;
@@ -4579,13 +4583,40 @@ function matchChannelRow(row, costRows, items) {
 // visually-identical stand-in that Firestore treats as an ordinary character.
 const sanitizeKeyPart = (s) => String(s || '').replace(/\//g, '⁄');
 
+// Two genuinely different articles can map to the same item AND the same declared pack
+// size (e.g. "Baby Cabbage" and "Cabbage" both packed "1 Piece" at a time, with their own
+// distinct EAN) — unlike the usual "same item, different pack size" case, where the pack
+// size itself already keeps them apart. Without something else to tell them apart, a plain
+// product+pack key would merge both into one group, silently losing one of them from
+// Packing/Barcode screens (its quantity gets folded into the other's, and only one of their
+// names/EANs survives). This appends the article's own EAN/code to the key, but ONLY for
+// the specific product+platform+pack combo that actually has more than one distinct
+// EAN/code behind it on this order list — every other, ordinary article keeps the exact
+// key (and therefore the same Firestore doc id) it always had, so this never disturbs
+// already-saved packing/pricing data for the common case.
+function disambiguateByArticle(orderList, baseKeyFor) {
+  const idsByBase = {};
+  orderList.forEach((o) => {
+    const base = baseKeyFor(o);
+    const artId = sanitizeKeyPart(o.rawEan || o.rawCode || '');
+    if (!idsByBase[base]) idsByBase[base] = new Set();
+    if (artId) idsByBase[base].add(artId);
+  });
+  return (o) => {
+    const base = baseKeyFor(o);
+    const artId = sanitizeKeyPart(o.rawEan || o.rawCode || '');
+    return (artId && idsByBase[base] && idsByBase[base].size > 1) ? `${base}__${artId}` : base;
+  };
+}
+
 function buildPricingArticles(orders, items, purchases, city, configByKey) {
   const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
   const map = {};
-  orders
-    .filter((o) => o.packSize && o.packUnit)
+  const pricedOrders = orders.filter((o) => o.packSize && o.packUnit);
+  const keyer = disambiguateByArticle(pricedOrders, (o) => `${city}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`);
+  pricedOrders
     .forEach((o) => {
-      const key = `${city}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      const key = keyer(o);
       // Pre-fix pricingConfig docs were saved without a city prefix at all, shared across
       // every city. Keeping this around lets a city inherit those old settings the first
       // time it prices this article, instead of silently resetting everyone to zero.
@@ -4628,8 +4659,12 @@ function buildPricingArticles(orders, items, purchases, city, configByKey) {
 function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
   const batchOrders = orders.filter((o) => o.batchId === batch.id && !o.isAdvance);
   const batchCity = batch.city || CITIES[0];
+  // Must reproduce the exact same keys buildPricingArticles assigned these same orders
+  // (articlesByKey is keyed that way) — so the disambiguation runs over the same priced-
+  // orders universe and the same base-key shape it used.
+  const keyer = disambiguateByArticle(orders.filter((o) => o.packSize && o.packUnit), (o) => `${batchCity}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`);
   const rows = batchOrders.map((o) => {
-    const key = `${batchCity}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
+    const key = keyer(o);
     const legacyKey = `${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
     const article = articlesByKey[key];
     const packSize = Number(o.packSize) || 1;
@@ -5735,12 +5770,17 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
 
   const groupedByDate = useMemo(() => {
     const map = {};
+    const keyer = disambiguateByArticle(filteredOrders, (o) => {
+      const dateKey = o.fulfilmentDate || 'No date';
+      const hasPack = !!(o.packQty && o.packSize);
+      const cityKey = o.city || CITIES[0];
+      return hasPack ? `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.unit}`;
+    });
     filteredOrders.forEach((o) => {
       const dateKey = o.fulfilmentDate || 'No date';
       map[dateKey] = map[dateKey] || {};
       const hasPack = !!(o.packQty && o.packSize);
-      const cityKey = o.city || CITIES[0];
-      const key = hasPack ? `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.unit}`;
+      const key = keyer(o);
       map[dateKey][key] = map[dateKey][key] || {
         key, product: o.product, articleName: o.articleName || o.product, unit: o.unit, qty: 0, platforms: new Set(),
         pendingIds: [], orderIds: [], hasPack, packSize: o.packSize, packUnit: o.packUnit, rawUnit: o.rawUnit || '', targetPacks: 0,
