@@ -4639,17 +4639,24 @@ const sanitizeKeyPart = (s) => String(s || '').replace(/\//g, '⁄');
 // key (and therefore the same Firestore doc id) it always had, so this never disturbs
 // already-saved packing/pricing data for the common case.
 function disambiguateByArticle(orderList, baseKeyFor) {
+  const normName = (o) => sanitizeKeyPart(String(o.articleName || '').trim().toLowerCase());
+  const idOf = (o) => sanitizeKeyPart(o.rawEan || o.rawCode || '');
   const idsByBase = {};
+  const namesByBase = {};
   orderList.forEach((o) => {
     const base = baseKeyFor(o);
-    const artId = sanitizeKeyPart(o.rawEan || o.rawCode || '');
-    if (!idsByBase[base]) idsByBase[base] = new Set();
-    if (artId) idsByBase[base].add(artId);
+    if (!idsByBase[base]) { idsByBase[base] = new Set(); namesByBase[base] = new Set(); }
+    if (idOf(o)) idsByBase[base].add(idOf(o));
+    if (normName(o)) namesByBase[base].add(normName(o));
   });
   return (o) => {
     const base = baseKeyFor(o);
-    const artId = sanitizeKeyPart(o.rawEan || o.rawCode || '');
-    return (artId && idsByBase[base] && idsByBase[base].size > 1) ? `${base}__${artId}` : base;
+    // Primary signal: the article's own EAN/code. Fallback signal: the channel's own
+    // article name — used when the EAN/code is missing or identical on both orders
+    // (so it can't tell them apart) but the names plainly show two different articles.
+    if (idsByBase[base] && idsByBase[base].size > 1) return `${base}__${idOf(o) || normName(o)}`;
+    if (namesByBase[base] && namesByBase[base].size > 1 && normName(o)) return `${base}__${normName(o)}`;
+    return base;
   };
 }
 
