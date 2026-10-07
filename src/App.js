@@ -3581,14 +3581,25 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     items.forEach((it) => { itemById[it.id] = it; catByName[nrm(it.name)] = it.category; });
 
     const recipesByOutput = {};
+    // A recipe is found by its output item's name, or by the recipe's own name, ignoring any
+    // "(pack)"-style bracket suffix — so an order for "MIXED SPROUTS" still finds the recipe whose
+    // output item is "MIXED SPROUTS (pack)" and its ingredients are bought instead of the finished item.
+    // Matching key: lower-case letters/digits only, so "250 g" = "250g", "-" vs "–", extra spaces etc. never block a match.
+    const nk = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, '');
+    const loose = (s) => nk(String(s || '').replace(/\([^)]*\)/g, ''));
+    const indexRecipe = (key, r) => {
+      if (!key) return;
+      const arr = (recipesByOutput[key] = recipesByOutput[key] || []);
+      if (!arr.includes(r)) arr.push(r);
+    };
     recipes.forEach((r) => {
       const out = itemById[r.outputItemId];
-      if (!out) return;
-      const k = nrm(out.name);
-      (recipesByOutput[k] = recipesByOutput[k] || []).push(r);
+      if (out) { indexRecipe(nk(out.name), r); indexRecipe(loose(out.name), r); }
+      indexRecipe(nk(r.name), r);
+      indexRecipe(loose(r.name), r);
     });
     const pickRecipes = (name) => {
-      const all = recipesByOutput[nrm(name)] || [];
+      const all = recipesByOutput[nk(name)] || recipesByOutput[loose(name)] || [];
       if (all.length === 0) return [];
       // Prefer recipes made for this city's own item; otherwise reuse one other city's recipe (never sum duplicates across cities).
       const local = all.filter((r) => cityIds.has(r.outputItemId));
@@ -3601,7 +3612,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
       map[name].needed += qty;
     };
     const explode = (name, qty, unit, depth) => {
-      const recs = depth < 5 ? pickRecipes(name) : [];
+      // ignore a recipe that lists the very item being expanded as an ingredient (e.g. "Banana (pack)" made from Banana)
+      const recs = depth < 5 ? pickRecipes(name).filter((r) => !(r.ingredients || []).some((ing) => itemById[ing.itemId] && loose(itemById[ing.itemId].name) === loose(name))) : [];
       if (recs.length > 0) {
         recs.forEach((recipe) => {
           (recipe.ingredients || []).forEach((ing) => {
