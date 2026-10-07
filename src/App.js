@@ -877,10 +877,10 @@ export default function FnvMobilePreview() {
   const unassignPackingTask = (key) => fbDelete('packingAssignments', key);
   // One doc per item (id = item id), so ticking the same item twice just rewrites it.
   const setPurchaseOrderPlacedFor = (itemId, placed) => (placed
-    ? fbSetDoc('purchaseOrderPlaced', itemId, { id: itemId, itemId, placedByName: (currentUser && currentUser.name) || '', at: Date.now(), city: effectiveCity })
+    ? fbSetDoc('purchaseOrderPlaced', itemId, { id: itemId, itemId, placedByName: (currentUser && currentUser.name) || '', at: Date.now(), day: todayLocalDate(), city: effectiveCity })
     : fbDelete('purchaseOrderPlaced', itemId));
   const clearPurchaseOrderPlaced = (itemIds) => {
-    const ids = (itemIds || []).filter((id) => purchaseOrderPlaced[id]);
+    const ids = Object.keys(purchaseOrderPlaced).slice(0, 450); // reset wipes every shared tick, including old/hidden ones
     if (!ids.length) return;
     const b = writeBatch(db);
     ids.forEach((id) => b.delete(doc(db, 'purchaseOrderPlaced', id)));
@@ -1035,7 +1035,7 @@ export default function FnvMobilePreview() {
               onResetOldOrders={resetOldOrders}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={purchaseOrderPlaced} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={Object.fromEntries(Object.entries(purchaseOrderPlaced).filter(([, v]) => v && v.day === todayLocalDate()))} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
           {tab === 'grading' && (
             <GradingTabMobile
               items={cityItems}
@@ -1094,13 +1094,13 @@ export default function FnvMobilePreview() {
                 {isCityLocked ? (
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#fff' }}>{currentUser.city}</p>
                 ) : (
-                  <select
+                  <SmartSelect
                     value={selectedCity}
                     onChange={(e) => setSelectedCity(e.target.value)}
                     style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.15)', borderRadius: RADIUS.md, padding: '8px', fontSize: 13, fontWeight: 700 }}
                   >
                     {CITIES.map((c) => <option key={c} value={c} style={{ color: INK }}>{c}</option>)}
-                  </select>
+                  </SmartSelect>
                 )}
               </div>
               <div style={{ padding: '10px 8px', flex: 1, overflowY: 'auto' }}>
@@ -1432,10 +1432,10 @@ function StaffPeopleMobile({ staff, onSaveStaff, onDeleteStaff }) {
         <p style={smallLabel}>MONTHLY SALARY (₹)</p>
         <Field type="number" value={editing.monthlySalary} onChange={(e) => setEditing({ ...editing, monthlySalary: e.target.value })} />
         <p style={smallLabel}>STATUS</p>
-        <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 10 }}>
+        <SmartSelect value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 10 }}>
           <option value="active">Active</option>
           <option value="inactive">Inactive (left)</option>
-        </select>
+        </SmartSelect>
         <div style={{ display: 'flex', gap: 8 }}>
           <PrimaryBtn onClick={save}>Save</PrimaryBtn>
           <button onClick={() => setEditing(null)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: RADIUS.md, padding: '10px 16px', fontWeight: 700, fontSize: 12 }}>Cancel</button>
@@ -1567,10 +1567,10 @@ function StaffAdvancesMobile({ staff, advances, month, onSave, onDelete }) {
         <Card style={{ marginBottom: 12 }}>
           <p style={sectionTitle}>Record an advance</p>
           <p style={smallLabel}>STAFF MEMBER</p>
-          <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 8 }}>
+          <SmartSelect value={staffId} onChange={(e) => setStaffId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 8 }}>
             <option value="">— Select —</option>
             {staff.filter((s) => s.status !== 'inactive').map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          </SmartSelect>
           <p style={smallLabel}>DATE</p>
           <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           <p style={smallLabel}>AMOUNT (₹)</p>
@@ -1848,10 +1848,10 @@ function AddPurchaseModalMobile({ vendor, items, defaultDate, onSave, onClose })
         )}
 
         <div style={smallLabel}>{stagedItems.length > 0 ? 'ADD ANOTHER ITEM' : 'ITEM'}</div>
-        <select value={itemId} onChange={(e) => setItemId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: SPACE.sm }}>
+        <SmartSelect value={itemId} onChange={(e) => setItemId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: SPACE.sm }}>
           {itemOptions.length === 0 && <option value="">No items available</option>}
           {itemOptions.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}
-        </select>
+        </SmartSelect>
         {vendorItems.length === 0 && items.length > 0 && (
           <div style={{ margin: '-6px 0 10px', fontSize: 11, color: MUTED }}>No items linked to {vendor.name} yet — showing all items.</div>
         )}
@@ -2627,22 +2627,22 @@ function AliasRowMobile({ alias, onChange, onRemove }) {
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, marginBottom: 6 }}>
       <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-        <select value={alias.channel} onChange={(e) => onChange({ ...alias, channel: e.target.value })} style={{ flex: 1, borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 6px' }}>
+        <SmartSelect value={alias.channel} onChange={(e) => onChange({ ...alias, channel: e.target.value })} style={{ flex: 1, borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 6px' }}>
           <option value="">Channel</option>
           {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
+        </SmartSelect>
         <button onClick={onRemove} style={{ background: 'none', border: 'none', color: TOMATO, cursor: 'pointer', padding: 4 }}><Trash2 size={14} /></button>
       </div>
       <Field placeholder="Item code" value={alias.code} onChange={(e) => onChange({ ...alias, code: e.target.value })} style={{ marginBottom: 6 }} />
       <Field placeholder="EAN" value={alias.ean || ''} onChange={(e) => onChange({ ...alias, ean: e.target.value })} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <Field placeholder="Pack size" type="number" value={alias.packSize} onChange={(e) => onChange({ ...alias, packSize: e.target.value })} style={{ flex: 1, marginBottom: 0 }} />
-        <select value={alias.packUnit || 'kg'} onChange={(e) => onChange({ ...alias, packUnit: e.target.value })} style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 6px' }}>
+        <SmartSelect value={alias.packUnit || 'kg'} onChange={(e) => onChange({ ...alias, packUnit: e.target.value })} style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, padding: '8px 6px' }}>
           <option value="kg">kg</option>
           <option value="g">g</option>
           <option value="pieces">pieces</option>
           <option value="pack">pack</option>
-        </select>
+        </SmartSelect>
       </div>
     </div>
   );
@@ -3301,7 +3301,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{r.rawName}</div>
                       <div style={{ fontSize: 11, color: MUTED, margin: '2px 0 6px' }}>Qty {r.qty} · UOM {r.unit || '—'} · {EAN_ONLY_PLATFORMS.has(pendingIndent.platform) ? 'EAN' : 'Code'} {(EAN_ONLY_PLATFORMS.has(pendingIndent.platform) ? r.rawEan : r.rawCode) || '—'} · {r.rawCategory || '—'}</div>
                       <div style={smallLabel}>Map to item</div>
-                      <select
+                      <SmartSelect
                         value={r.mappedItemId || ''}
                         onChange={(e) => setRowMapping(r.key, e.target.value)}
                         style={{ width: '100%', boxSizing: 'border-box', borderRadius: RADIUS.md, border: `1px solid ${LINE}`, padding: '10px 8px', fontSize: 13, marginBottom: 8, background: '#fff' }}
@@ -3309,7 +3309,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
                         <option value="">Not mapped</option>
                         {items.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}
                         <option value="__new__">{`+ New "${r.rawName}"`}</option>
-                      </select>
+                      </SmartSelect>
                       {mappedItem && rowAlias && (
                         <>
                           <div style={smallLabel}>Pack size ({mappedItem.uom} per pack)</div>
@@ -3746,7 +3746,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
           </div>
           <div style={{ marginTop: 16 }}>
             <div style={smallLabel}>Select vendor</div>
-            <select
+            <SmartSelect
               value={selectedVendorId}
               onChange={(e) => { setSelectedVendorId(e.target.value); setShowAllVendorItems(false); }}
               style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, color: INK, background: '#fff' }}
@@ -3755,7 +3755,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
               {dropdownVendors.map((v) => (
                 <option key={v.id} value={v.id}>{v.name}</option>
               ))}
-            </select>
+            </SmartSelect>
             {mappedVendors.length === 0 ? (
               <div style={{ fontSize: 11, color: AMBER, marginTop: 4 }}>No vendor is linked to {it?.name} yet — showing every vendor. Link one in Vendors to shorten this list next time.</div>
             ) : !showAllVendorsInDropdown && (
@@ -4008,24 +4008,24 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 6 }}>
-          <select value={vendorFilterId} onChange={(e) => setVendorFilterId(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          <SmartSelect value={vendorFilterId} onChange={(e) => setVendorFilterId(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             <option value="">All vendors</option>
             {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-          <select value={PURCHASE_CATEGORY_OPTIONS.includes(categoryFilter) ? categoryFilter : 'ALL'} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          </SmartSelect>
+          <SmartSelect value={PURCHASE_CATEGORY_OPTIONS.includes(categoryFilter) ? categoryFilter : 'ALL'} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             {PURCHASE_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
+          </SmartSelect>
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-          <select value={qtySort} onChange={(e) => setQtySort(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          <SmartSelect value={qtySort} onChange={(e) => setQtySort(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             <option value="none">Default sort</option>
             <option value="asc">Qty: Low-High</option>
             <option value="desc">Qty: High-Low</option>
-          </select>
-          <select value={fulfilmentDateFilter} onChange={(e) => setFulfilmentDateFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          </SmartSelect>
+          <SmartSelect value={fulfilmentDateFilter} onChange={(e) => setFulfilmentDateFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             <option value="ALL">All Purchase</option>
             {availableFulfilmentDates.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
+          </SmartSelect>
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
@@ -4692,9 +4692,11 @@ const sanitizeKeyPart = (s) => String(s || '').replace(/\//g, '⁄');
 // EAN/code behind it on this order list — every other, ordinary article keeps the exact
 // key (and therefore the same Firestore doc id) it always had, so this never disturbs
 // already-saved packing/pricing data for the common case.
-function disambiguateByArticle(orderList, baseKeyFor) {
-  const normName = (o) => sanitizeKeyPart(String(o.articleName || '').trim().toLowerCase());
-  const idOf = (o) => sanitizeKeyPart(o.rawEan || o.rawCode || '');
+function disambiguateByArticle(orderList, baseKeyFor, idFn) {
+  const normName = (o) => sanitizeKeyPart(String(o.articleName || '').trim().toLowerCase().replace(/\s+/g, ' '));
+  // Flipkart/Zepto re-issue their own FSN/UUID "code" on a relisting, so for them only the
+  // EAN counts as the article's identity — never the code (see EAN_ONLY_PLATFORMS).
+  const idOf = idFn || ((o) => sanitizeKeyPart(o.rawEan || ((o.platform === 'Flipkart' || o.platform === 'Zepto') ? '' : (o.rawCode || ''))));
   const idsByBase = {};
   const namesByBase = {};
   orderList.forEach((o) => {
@@ -4709,23 +4711,74 @@ function disambiguateByArticle(orderList, baseKeyFor) {
     // article name — used when the EAN/code is missing or identical on both orders
     // (so it can't tell them apart) but the names plainly show two different articles.
     if (idsByBase[base] && idsByBase[base].size > 1) return `${base}__${idOf(o) || normName(o)}`;
-    if (namesByBase[base] && namesByBase[base].size > 1 && normName(o)) return `${base}__${normName(o)}`;
+    // (A caller-supplied idFn already encodes the name, so this fallback is only for the default id.)
+    if (!idFn && namesByBase[base] && namesByBase[base].size > 1 && normName(o)) return `${base}__${normName(o)}`;
     return base;
   };
+}
+
+// The same physical article (same platform + item + EAN) can sit on orders that recorded a
+// different pack size — e.g. its mapping was edited from 0.30kg to 0.35kg between two indents —
+// and since the pack size is part of the pricing key, one article then showed up as several
+// near-identical rows on the Pricing sheet. This folds those back into ONE article, priced at
+// the pack size of its most recent order. Orders that carry no EAN (older ones) join the
+// article that has the same channel article name. The key stays in the exact existing format
+// (just built from that latest pack size), so an article that never changed pack size keeps
+// the very same key and saved pricing as before. `ownKeyFor` is the key an order would have had
+// on its own pack size — used to still find pricing saved against an older variant.
+function buildArticleKeyer(pricedOrders, city) {
+  // An article is "the same one" when platform + item + the channel's own article name
+  // match — NOT the EAN, which can be missing on older orders or re-issued on a relisting
+  // (that is exactly what left one article split into several Pricing rows). Two articles
+  // that merely share an item but are named differently (Baby Banana vs Banana 3pc, Cabbage
+  // vs Baby Cabbage) stay apart. Only when an order has no article name at all does its EAN
+  // / code stand in as the identity.
+  const eanOnly = (p) => p === 'Flipkart' || p === 'Zepto';
+  const norm = (v) => sanitizeKeyPart(String(v || '').trim().toLowerCase().replace(/\s+/g, ' '));
+  const idOf = (o) => {
+    const n = norm(o.articleName);
+    if (n) return `n:${n}`;
+    const e = sanitizeKeyPart(o.rawEan || (eanOnly(o.platform) ? '' : (o.rawCode || '')));
+    return e ? `e:${e}` : `p:${norm(o.product)}`;
+  };
+  const prefix = (o) => `${o.platform}__${sanitizeKeyPart(o.product)}`;
+  const latest = {};
+  pricedOrders.forEach((o) => {
+    const g = `${prefix(o)}__${idOf(o)}`;
+    const stamp = `${o.fulfilmentDate || ''}|${o.id || ''}`;
+    if (!latest[g] || stamp > latest[g].stamp) latest[g] = { stamp, packSize: o.packSize, packUnit: o.packUnit };
+  });
+  const canonPack = (o) => latest[`${prefix(o)}__${idOf(o)}`] || o;
+  const baseFor = (o) => { const p = canonPack(o); return `${city}__${sanitizeKeyPart(o.product)}__${o.platform}__${p.packSize}__${p.packUnit}`; };
+  const keyFor = disambiguateByArticle(pricedOrders, baseFor, idOf);
+  const ownKeyFor = (o) => `${city}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
+  const stampOf = (o) => `${o.fulfilmentDate || ''}|${o.id || ''}`;
+  return { keyFor, ownKeyFor, stampOf };
 }
 
 function buildPricingArticles(orders, items, purchases, city, configByKey) {
   const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
   const map = {};
   const pricedOrders = orders.filter((o) => o.packSize && o.packUnit);
-  const keyer = disambiguateByArticle(pricedOrders, (o) => `${city}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`);
-  pricedOrders
+  const { keyFor, ownKeyFor, stampOf } = buildArticleKeyer(pricedOrders, city);
+  // Old variant keys (same article, an earlier pack size) per canonical key, so pricing
+  // already saved against one of them is still found rather than silently reset.
+  const altByKey = {};
+  pricedOrders.forEach((o) => {
+    const k = keyFor(o); const own = ownKeyFor(o);
+    if (own !== k) { (altByKey[k] = altByKey[k] || new Set()).add(own); }
+  });
+  // Newest order first, so the order that creates each article row (and so supplies its
+  // pack size and name) is its latest one — the same one the key was built from.
+  pricedOrders.slice().sort((a, b) => (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0))
     .forEach((o) => {
-      const key = keyer(o);
+      const key = keyFor(o);
       // Pre-fix pricingConfig docs were saved without a city prefix at all, shared across
       // every city. Keeping this around lets a city inherit those old settings the first
       // time it prices this article, instead of silently resetting everyone to zero.
-      const legacyKey = `${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      const plainLegacyKey = `${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
+      const altWithConfig = Array.from(altByKey[key] || []).find((k) => configByKey?.[k]);
+      const legacyKey = altWithConfig || plainLegacyKey;
       if (map[key]) return;
       const item = items.find((it) => it.name === o.product);
       const byIdInfo = o.itemId ? latestUnitPriceByItem.byId[o.itemId] : null;
@@ -4735,13 +4788,14 @@ function buildPricingArticles(orders, items, purchases, city, configByKey) {
       // A base price fetched from the latest purchase is the default — but a specific
       // article's config can carry a manual override (e.g. before any purchase exists yet,
       // or to correct a one-off odd purchase price) which always wins when set.
-      const config = configByKey?.[key] || configByKey?.[legacyKey];
+      const config = configByKey?.[key] || configByKey?.[legacyKey] || configByKey?.[plainLegacyKey];
       const hasOverride = config?.basePriceOverride != null;
       const basePrice = hasOverride ? config.basePriceOverride : autoBasePrice;
       const alias = (item?.aliases || []).find((al) => al.channel === o.platform && String(al.packSize) === String(o.packSize) && al.packUnit === o.packUnit);
       map[key] = {
         key,
         legacyKey,
+        altKeys: Array.from(altByKey[key] || []),
         articleName: o.articleName || o.product,
         product: o.product,
         category: item?.category || '',
@@ -4767,7 +4821,7 @@ function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
   // Must reproduce the exact same keys buildPricingArticles assigned these same orders
   // (articlesByKey is keyed that way) — so the disambiguation runs over the same priced-
   // orders universe and the same base-key shape it used.
-  const keyer = disambiguateByArticle(orders.filter((o) => o.packSize && o.packUnit), (o) => `${batchCity}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`);
+  const { keyFor: keyer } = buildArticleKeyer(orders.filter((o) => o.packSize && o.packUnit), batchCity);
   const rows = batchOrders.map((o) => {
     const key = keyer(o);
     const legacyKey = `${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}`;
@@ -4775,7 +4829,7 @@ function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
     const packSize = Number(o.packSize) || 1;
     const shortPacks = Math.min(Number(o.packQty) || 0, (Number(o.shortQty) || 0) / packSize);
     const effectivePacks = Math.max(0, Math.round(((Number(o.packQty) || 0) - shortPacks) * 100) / 100);
-    const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[legacyKey]) : null;
+    const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[article.legacyKey] || configByKey[legacyKey]) : null;
     const cost = finalPricePerPack == null ? null : Math.round(finalPricePerPack * effectivePacks * 100) / 100;
     return {
       orderId: o.id,
@@ -4899,6 +4953,53 @@ function parseGrnPdfText(text) {
 const BLINKIT_NUM_RE = /^-?[\d,]+(\.\d+)?$/;
 const blinkitNum = (s) => Number(String(s).replace(/,/g, '')) || 0;
 
+// Hyperpure/Blinkit "PURCHASE ORDER" PDF (Margin/MRP shown as "-", so the regex parser can't match it)
+function parseHyperpurePoWords(pages) {
+  const out = [];
+  let prevAnchors = null;
+  (pages || []).forEach((words, pi) => {
+    const anchors = [];
+    words.forEach((w) => {
+      if (w.x < 62 && /^\d{5,7}$/.test(w.text)) {
+        const hsn = words.find((h) => Math.abs(h.y - w.y) < 4 && h.x > 180 && h.x < 230 && /^\d{8}$/.test(h.text));
+        if (hsn) anchors.push({ code: w.text, y: w.y, parts: [] });
+      }
+    });
+    if (!anchors.length) return;
+    anchors.sort((a, b) => a.y - b.y);
+    const firstY = anchors[0].y;
+    words.forEach((w) => {
+      if (w.x < 66 || w.x >= 190) return;
+      let a = null;
+      if (pi > 0 && prevAnchors && w.y < firstY - 9) a = prevAnchors[prevAnchors.length - 1];
+      else a = anchors.reduce((best, c) => (!best || Math.abs(c.y - w.y) < Math.abs(best.y - w.y) ? c : best), null);
+      const isCarry = pi > 0 && w.y < firstY - 9;
+      if (a && (isCarry || Math.abs(a.y - w.y) <= 12)) a.parts.push(w);
+    });
+    anchors.forEach((a) => {
+      const line = words.filter((w) => Math.abs(w.y - a.y) < 4);
+      const num = (lo, hi) => line.filter((w) => w.x >= lo && w.x < hi && /^-?[\d,]+(\.\d+)?$/.test(w.text))[0];
+      const q = num(325, 385), p = num(385, 410), t = num(540, 700);
+      a.qty = q ? Number(q.text.replace(/,/g, '')) : 0;
+      a.price = p ? Number(p.text.replace(/,/g, '')) : 0;
+      a.total = t ? Number(t.text.replace(/,/g, '')) : 0;
+    });
+    // name = words ordered by page then y then x
+    anchors.forEach((a) => {
+      a.parts.sort((p, q) => (Math.abs(p.y - q.y) < 2 ? p.x - q.x : p.y - q.y));
+    });
+    anchors.forEach((a) => out.push(a));
+    prevAnchors = anchors;
+  });
+  return out
+    .map((a) => ({
+      code: a.code,
+      name: a.parts.map((w) => w.text).join(' ').replace(/\s+/g, ' ').replace(/\s+,/g, ',').trim(),
+      qty: a.qty, price: a.price, total: a.total || a.qty * a.price,
+    }))
+    .filter((r) => r.name && r.qty > 0);
+}
+
 function parseBlinkitPoScheduleWords(pages) {
   const rows = [];
   pages.forEach((words) => {
@@ -4973,7 +5074,7 @@ function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, i
   const [openBatchId, setOpenBatchId] = useState(null);
   const configByKey = useMemo(() => { const m = {}; pricingConfig.forEach((x) => { m[x.id] = x; }); return m; }, [pricingConfig]);
   const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city, configByKey), [orders, items, purchases, city, configByKey]);
-  const articlesByKey = useMemo(() => { const m = {}; articles.forEach((a) => { m[a.key] = a; }); return m; }, [articles]);
+  const articlesByKey = useMemo(() => { const m = {}; articles.forEach((a) => { m[a.key] = a; }); articles.forEach((a) => (a.altKeys || []).forEach((k) => { if (!m[k]) m[k] = a; })); return m; }, [articles]);
 
   const batchFinancials = useMemo(() => indentBatches.filter((b) => !b.isAdvance).map((b) => {
     const costs = computeBatchArticleCosts(b, orders, articlesByKey, configByKey);
@@ -5179,7 +5280,7 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
     if (isPdf) {
       extractPdfText(file).then(async (t) => {
           let rows = parsePoPdfText(t);
-          if (!rows.length) rows = parseBlinkitPoScheduleWords(await extractPdfWords(file)); // Blinkit's newer PO schedule
+          if (!rows.length) { const w = await extractPdfWords(file); rows = parseHyperpurePoWords(w); if (!rows.length) rows = parseBlinkitPoScheduleWords(w); } // Blinkit's newer PO schedule
           finish(rows, file.name, t);
         }).catch(() => setPoError('Could not read this PDF.'));
       e.target.value = ''; return;
@@ -5481,9 +5582,9 @@ function SalesPaymentsMobile({ batchFinancials, salesInvoices, salesPayments, on
         <Card style={{ marginBottom: 12 }}>
           <div style={sectionTitle}>Log a payment received</div>
           <div style={smallLabel}>PLATFORM</div>
-          <select value={platform} onChange={(e) => { setPlatform(e.target.value); setLinkedId(''); }} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 8 }}>
+          <SmartSelect value={platform} onChange={(e) => { setPlatform(e.target.value); setLinkedId(''); }} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 8 }}>
             {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
+          </SmartSelect>
           <div style={smallLabel}>DATE</div>
           <Field type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           <div style={smallLabel}>AMOUNT (₹)</div>
@@ -5491,14 +5592,14 @@ function SalesPaymentsMobile({ batchFinancials, salesInvoices, salesPayments, on
           <div style={smallLabel}>REFERENCE (optional)</div>
           <Field value={reference} onChange={(e) => setReference(e.target.value)} placeholder="UTR / transaction ID" />
           <div style={smallLabel}>{platform === 'Flipkart' ? 'AGAINST INVOICE' : 'AGAINST BATCH (optional)'}</div>
-          <select value={linkedId} onChange={(e) => setLinkedId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 10 }}>
+          <SmartSelect value={linkedId} onChange={(e) => setLinkedId(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, marginBottom: 10 }}>
             <option value="">— Not linked —</option>
             {(platform === 'Flipkart' ? platformInvoices : platformBatches).map((x) => (
               platform === 'Flipkart'
                 ? <option key={x.id} value={x.id}>{x.invoiceNumber} ({money(x.amount)})</option>
                 : <option key={x.batch.id} value={x.batch.id}>{x.batch.id} (GRN {money(x.grnValue)})</option>
             ))}
-          </select>
+          </SmartSelect>
           <div style={{ display: 'flex', gap: 8 }}>
             <PrimaryBtn onClick={save}>Save payment</PrimaryBtn>
             <button onClick={() => setLogging(false)} style={{ background: '#fff', color: INK, border: `1px solid ${LINE}`, borderRadius: RADIUS.md, padding: '10px 16px', fontWeight: 700, fontSize: 12 }}>Cancel</button>
@@ -6057,18 +6158,18 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
       )}
       <Card style={{ marginBottom: 12, padding: '10px 12px' }}>
         <div style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
-          <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          <SmartSelect value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             <option value="All">All channels</option>
             {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          </SmartSelect>
+          <SmartSelect value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             {categoriesPresent.map((c) => <option key={c} value={c}>{c === 'All' ? 'All categories' : c}</option>)}
-          </select>
-          <select value={qtySort} onChange={(e) => setQtySort(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
+          </SmartSelect>
+          <SmartSelect value={qtySort} onChange={(e) => setQtySort(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '6px 4px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }}>
             <option value="none">Default sort</option>
             <option value="asc">Qty: Low-High</option>
             <option value="desc">Qty: High-Low</option>
-          </select>
+          </SmartSelect>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
           <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} style={{ flex: 1, boxSizing: 'border-box', padding: '6px 8px', borderRadius: 6, border: `1px solid ${LINE}`, fontSize: 11, color: INK, background: '#fff' }} />
@@ -6539,13 +6640,13 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
 
       {view === 'dispatch' && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <select value={activeChannel} onChange={(e) => changeChannel(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}>
+          <SmartSelect value={activeChannel} onChange={(e) => changeChannel(e.target.value)} style={{ flex: '1 1 0', minWidth: 0, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}>
             {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <select value={activeStore ? activeStore.value : ''} onChange={(e) => changeStore(e.target.value)} disabled={storeOptions.length === 0} style={{ flex: '1.4 1 0', minWidth: 0, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}>
+          </SmartSelect>
+          <SmartSelect value={activeStore ? activeStore.value : ''} onChange={(e) => changeStore(e.target.value)} disabled={storeOptions.length === 0} style={{ flex: '1.4 1 0', minWidth: 0, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}>
             {storeOptions.length === 0 && <option value="">No stores yet</option>}
             {storeOptions.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
+          </SmartSelect>
         </div>
       )}
 
@@ -6779,6 +6880,178 @@ function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, on
           <button onClick={submitRole} style={{ background: LEAF, color: '#fff', border: 'none', borderRadius: 8, padding: '0 14px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>+ Add</button>
         </div>
       </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SmartSelect: drop-in replacement for <select>. Long lists become a type-to-search box
+// that shows the best matches underneath; short fixed lists stay as a normal dropdown.
+// ---------------------------------------------------------------------------
+function ssCollectOptions(children, out = []) {
+  React.Children.forEach(children, (ch) => {
+    if (ch == null || ch === false || typeof ch === 'boolean') return;
+    if (ch.type === 'option') {
+      const kids = ch.props.children;
+      const label = Array.isArray(kids) ? kids.map((k) => (typeof k === 'string' || typeof k === 'number' ? k : '')).join('') : (kids == null ? '' : String(kids));
+      out.push({ value: ch.props.value != null ? String(ch.props.value) : label, label, disabled: !!ch.props.disabled });
+    } else if (ch.props && ch.props.children) {
+      ssCollectOptions(ch.props.children, out);
+    }
+  });
+  return out;
+}
+const ssNorm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, ' ').trim();
+function ssScore(label, q) {
+  const l = ssNorm(label);
+  if (!q) return 1;
+  if (l === q) return 1000;
+  if (l.startsWith(q)) return 900 - l.length * 0.1;
+  const words = l.split(' ');
+  const toks = q.split(' ').filter(Boolean);
+  let total = 0;
+  for (const t of toks) {
+    let best = 0;
+    if (words.some((w) => w === t)) best = 300;
+    else if (words.some((w) => w.startsWith(t))) best = 250;
+    else if (l.includes(t)) best = 150;
+    else {
+      // loose match: letters of the token appear in order inside one word (handles typos/short forms)
+      const hit = words.find((w) => {
+        if (w[0] !== t[0]) return false;
+        let k = 0;
+        for (let i = 0; i < w.length && k < t.length; i++) if (w[i] === t[k]) k++;
+        return k === t.length && t.length >= 3;
+      });
+      if (hit) best = 60;
+    }
+    if (!best) return 0;
+    total += best;
+  }
+  if (l.includes(q)) total += 100;
+  return total - l.length * 0.05;
+}
+function SmartSelect({ value, onChange, children, style, disabled, title, ...rest }) {
+  const options = useMemo(() => ssCollectOptions(children), [children]);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [hi, setHi] = useState(0);
+  const [rect, setRect] = useState(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
+  const val = value == null ? '' : String(value);
+  const selected = options.find((o) => o.value === val);
+  const placeholderOpt = options.find((o) => o.value === '');
+
+  const useNative = options.length <= 6;
+  const results = useMemo(() => {
+    if (useNative) return [];
+    const q = ssNorm(query);
+    if (!q) return options;
+    return options
+      .filter((o) => o.value !== '')
+      .map((o) => ({ o, s: ssScore(o.label, q) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .map((x) => x.o);
+  }, [options, query, useNative]);
+
+  const measure = () => {
+    if (inputRef.current) setRect(inputRef.current.getBoundingClientRect());
+  };
+  useEffect(() => {
+    if (!open) return undefined;
+    measure();
+    const h = (e) => { if (listRef.current && e && e.target && listRef.current.contains(e.target)) return; measure(); };
+    window.addEventListener('scroll', h, true);
+    window.addEventListener('resize', h);
+    return () => { window.removeEventListener('scroll', h, true); window.removeEventListener('resize', h); };
+  }, [open]);
+  useEffect(() => {
+    if (open && listRef.current) {
+      const el = listRef.current.children[hi];
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+    }
+  }, [hi, open]);
+
+  if (useNative) {
+    return <select value={value} onChange={onChange} style={style} disabled={disabled} title={title} {...rest}>{children}</select>;
+  }
+
+  const s = style || {};
+  const wrapKeys = ['flex', 'flexGrow', 'flexShrink', 'flexBasis', 'margin', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight', 'alignSelf', 'gridColumn', 'minWidth', 'maxWidth'];
+  const wrapStyle = { position: 'relative', display: 'block' };
+  const inputOwn = { ...s };
+  wrapKeys.forEach((k) => { if (s[k] !== undefined) { wrapStyle[k] = s[k]; delete inputOwn[k]; } });
+  const autoWidth = s.width == null || s.width === 'auto';
+  if (autoWidth) {
+    const longest = options.reduce((m, o) => Math.max(m, o.label.length), 8);
+    wrapStyle.display = 'inline-block';
+    if (s.flex === undefined) wrapStyle.width = Math.max(130, Math.min(260, longest * 7 + 36));
+    delete inputOwn.width;
+  } else {
+    wrapStyle.width = s.width;
+    delete inputOwn.width;
+  }
+  const choose = (o) => {
+    if (!o || o.disabled) return;
+    setOpen(false);
+    setQuery('');
+    if (onChange) onChange({ target: { value: o.value }, currentTarget: { value: o.value } });
+  };
+  const onKey = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHi((h) => Math.min(h + 1, Math.max(results.length - 1, 0))); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter') { if (open) { e.preventDefault(); choose(results[hi]); } }
+    else if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+  };
+  const shown = open ? query : (selected && selected.value !== '' ? selected.label : '');
+  const spaceBelow = rect ? window.innerHeight - rect.bottom : 300;
+  const openUp = rect && spaceBelow < 180 && rect.top > spaceBelow;
+  const maxH = Math.max(120, Math.min(260, (openUp ? rect.top : spaceBelow) - 12));
+  return (
+    <div style={wrapStyle}>
+      <input
+        ref={inputRef}
+        type="text"
+        value={shown}
+        disabled={disabled}
+        title={title}
+        placeholder={placeholderOpt ? placeholderOpt.label : 'Search…'}
+        autoComplete="off"
+        onFocus={(e) => { setOpen(true); setQuery(''); setHi(0); measure(); if (e.target.select) e.target.select(); }}
+        onClick={() => { if (!open) { setOpen(true); setQuery(''); setHi(0); measure(); } }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); setHi(0); }}
+        onBlur={() => { setOpen(false); setQuery(''); }}
+        onKeyDown={onKey}
+        style={{ ...inputOwn, width: '100%', boxSizing: 'border-box', paddingRight: 22, textOverflow: 'ellipsis' }}
+      />
+      <span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: 10, color: '#6b6b60' }}>▾</span>
+      {open && rect && (
+        <div
+          ref={listRef}
+          style={{
+            position: 'fixed', left: rect.left, width: Math.max(rect.width, 180),
+            ...(openUp ? { bottom: window.innerHeight - rect.top + 2 } : { top: rect.bottom + 2 }),
+            maxHeight: maxH, overflowY: 'auto', background: '#fff', border: '1px solid #cfcab9', borderRadius: 8,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.18)', zIndex: 100000, WebkitOverflowScrolling: 'touch',
+          }}
+        >
+          {results.length === 0 && <div style={{ padding: '10px 12px', fontSize: 13, color: '#8a8a7e' }}>No matches</div>}
+          {results.map((o, i) => (
+            <div
+              key={o.value + '|' + i}
+              onMouseDown={(e) => { e.preventDefault(); choose(o); }}
+              onMouseEnter={() => setHi(i)}
+              style={{
+                padding: '9px 12px', fontSize: 13, cursor: o.disabled ? 'not-allowed' : 'pointer', color: o.disabled ? '#aaa' : '#1f2a20',
+                background: i === hi ? '#e8efe6' : (o.value === val ? '#f4f1e8' : '#fff'), fontWeight: o.value === val ? 600 : 400,
+                borderBottom: '1px solid #f0ede2',
+              }}
+            >{o.label || '—'}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
