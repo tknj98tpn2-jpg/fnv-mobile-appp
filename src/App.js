@@ -455,6 +455,7 @@ export default function FnvMobilePreview() {
   const [indentBatches, setIndentBatches] = useState([]);
   const [packingProgress, setPackingProgress] = useState({}); // { [targetKey]: packedPacks }
   const [packingAssignments, setPackingAssignments] = useState({}); // { [targetKey]: { assignedTo, assignedToName } }
+  const [purchaseOrderPlaced, setPurchaseOrderPlaced] = useState({}); // { [itemId]: { placedByName, at, city } } — shared "order already placed" ticks on the Purchase list
   const [stockCounts, setStockCounts] = useState([]); // nightly closing-stock entries, one per item per date
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
@@ -526,7 +527,16 @@ export default function FnvMobilePreview() {
       setPackingAssignments(map);
     });
 
-    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); };
+    // "Order placed" ticks on the Purchase list — a real shared collection (not
+    // per-device storage) so the person who ticks an item and the purchase
+    // manager looking at the same list always see the same marks.
+    const unsub5 = onSnapshot(collection(db, 'purchaseOrderPlaced'), (snap) => {
+      const map = {};
+      snap.docs.forEach((d) => { map[d.id] = d.data(); });
+      setPurchaseOrderPlaced(map);
+    });
+
+    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); unsub5(); };
   }, []);
 
   // ── Session — restore a saved login once the users list has loaded ──
@@ -865,6 +875,17 @@ export default function FnvMobilePreview() {
   // wiped the next time the packer updates their own progress.
   const assignPackingTask = (key, userId, userName) => fbSetDoc('packingAssignments', key, { assignedTo: userId, assignedToName: userName, city: effectiveCity });
   const unassignPackingTask = (key) => fbDelete('packingAssignments', key);
+  // One doc per item (id = item id), so ticking the same item twice just rewrites it.
+  const setPurchaseOrderPlacedFor = (itemId, placed) => (placed
+    ? fbSetDoc('purchaseOrderPlaced', itemId, { id: itemId, itemId, placedByName: (currentUser && currentUser.name) || '', at: Date.now(), city: effectiveCity })
+    : fbDelete('purchaseOrderPlaced', itemId));
+  const clearPurchaseOrderPlaced = (itemIds) => {
+    const ids = (itemIds || []).filter((id) => purchaseOrderPlaced[id]);
+    if (!ids.length) return;
+    const b = writeBatch(db);
+    ids.forEach((id) => b.delete(doc(db, 'purchaseOrderPlaced', id)));
+    b.commit();
+  };
   const toggleReleaseBatch = (batchId, purchaseDate) => {
     const batch = indentBatches.find((b) => b.id === batchId);
     if (!batch) return;
@@ -1014,7 +1035,7 @@ export default function FnvMobilePreview() {
               onResetOldOrders={resetOldOrders}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={purchaseOrderPlaced} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
           {tab === 'grading' && (
             <GradingTabMobile
               items={cityItems}
@@ -3436,7 +3457,7 @@ function OrdersListCard({ orders, indentBatches }) {
 // CUT is intentionally not listed: processed (CUT) items are never bought directly — only their raw ingredients are.
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS'];
 
-function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds, onRestoreExcluded }) {
+function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds, onRestoreExcluded, orderPlacedMap, onSetOrderPlaced, onClearOrderPlaced }) {
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
@@ -3451,12 +3472,13 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const [view, setView] = useState('list'); // 'list' | 'purchased'
 
   // Plain "order already placed to someone" marker - independent of the
-  // select-mode flow above (which is for building a new order to share).
-  // Persisted so it survives a reload, but it's a personal checklist aid
-  // only - not synced to Firestore, and "Reset items needing purchase"
-  // clears it too since that's the same "start this list over" action.
-  const [orderPlacedIds, setOrderPlacedIds] = usePersistedState('fnv_purchase_order_placed', []);
-  const toggleOrderPlaced = (id) => setOrderPlacedIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  // select-mode flow below (which is for building a new order to share).
+  // Stored in Firestore (shared across everyone using the app), so the purchase
+  // manager sees what you ticked and you see what they ticked. "Reset items
+  // needing purchase" clears these too, since that's the same "start this list
+  // over" action.
+  const orderPlacedIds = Object.keys(orderPlacedMap || {});
+  const toggleOrderPlaced = (id) => onSetOrderPlaced(id, !(orderPlacedMap || {})[id]);
 
   // Multi-select / order sharing
   const [selectMode, setSelectMode] = useState(false);
@@ -4044,7 +4066,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
-              onClick={() => { onResetPurchaseNeeds(allPurchaseNeedOrderIds); setOrderPlacedIds([]); setConfirmingPurchaseReset(false); }}
+              onClick={() => { onResetPurchaseNeeds(allPurchaseNeedOrderIds); onClearOrderPlaced(items.map((it) => it.id)); setConfirmingPurchaseReset(false); }}
               disabled={!allPurchaseNeedOrderIds.length}
               style={{ flex: 1, background: allPurchaseNeedOrderIds.length ? TOMATO : '#E5E1D4', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 0', fontSize: 12, fontWeight: 700 }}
             >
@@ -4444,6 +4466,35 @@ async function extractPdfText(file) {
   return fullText;
 }
 
+// Same as extractPdfText, but keeps each word's position instead of flattening
+// everything into one string. Zepto's GRN PDF (see parseZeptoGrnWords below)
+// wraps a multi-word item name onto two lines that straddle the row's own
+// numbers — a plain flattened-text regex reliably shreds those wrapped names
+// (a trailing word floats into the NEXT row) — so that parser reconstructs
+// each row from x/y position instead, which needs this richer per-word
+// extraction. Returns one array of { text, x, y } per page; y increases
+// downward (like a page you read top to bottom), unlike pdf.js's own
+// coordinate space which increases upward, so it's negated here once and
+// every consumer can treat "bigger y" as "further down the page".
+async function extractPdfWords(file) {
+  const pdfjsLib = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const words = [];
+    content.items.forEach((item) => {
+      const x = item.transform[4];
+      const y = -item.transform[5];
+      String(item.str || '').split(/\s+/).filter(Boolean).forEach((w) => words.push({ text: w, x, y }));
+    });
+    pages.push(words);
+  }
+  return pages;
+}
+
 const GRN_CODE_KEYS = ['productid', 'itemcode', 'code', 'sku', 'articlecode', 'fsn'];
 const GRN_NAME_KEYS = ['productdescription', 'itemname', 'name', 'description', 'article', 'product'];
 // "Received"/"accepted" must beat a generic "quantity", or a PO-ordered column wins.
@@ -4548,6 +4599,9 @@ function parsePoSheetRows(rows) {
 function extractPoNumber(rawText, fileName) {
   const m = rawText && String(rawText).match(/PO\s*Number\s*:?\s*([A-Za-z0-9-]+)/i);
   if (m) return m[1];
+  // Blinkit's newer PO schedule prints it bare, e.g. "CPCMP27-PO-4375987", with no "PO Number:" label.
+  const bm = rawText && String(rawText).match(/\b[A-Z0-9]+-PO-\d+\b/);
+  if (bm) return bm[0];
   return String(fileName || '').replace(/\.(xlsx|xls|csv|pdf)$/i, '').replace(/^purchase[_\s-]*order[_\s-]*/i, '').trim() || fileName || '';
 }
 
@@ -4831,6 +4885,87 @@ function parseGrnPdfText(text) {
   return rows;
 }
 
+// ── Blinkit's newer PDF layouts (Oct 2026) ──────────────────────────────────
+// Blinkit (Hyperpure) changed both documents. The PO is now a "PO SCHEDULE":
+// Product No / ProductName / HSN / Scheduled Qty — it carries NO price at all
+// any more (the old PO had MRP, margin and price per unit). The GRN dropped the
+// UPC/MRP columns and became: Product No / Product Name / HSN / Qty Ord / Qty
+// Del / GRN Qty / Damaged Qty / PricePer Unit / UoM / GST Rate / Tax / Amount,
+// with a long product name wrapping onto 2-3 lines around the row's own numbers
+// (and the UoM sometimes wrapping too: "Per / piece"). Flattened text shreds
+// those wrapped names, so — like Zepto's GRN — rows are rebuilt from each
+// word's x/y position (extractPdfWords). The old regex parsers above still run
+// first, so PDFs in the previous layout keep working exactly as before.
+const BLINKIT_NUM_RE = /^-?[\d,]+(\.\d+)?$/;
+const blinkitNum = (s) => Number(String(s).replace(/,/g, '')) || 0;
+
+function parseBlinkitPoScheduleWords(pages) {
+  const rows = [];
+  pages.forEach((words) => {
+    // The column header's own "HSN" (sitting well right of the product-no column)
+    // marks where item rows begin on this page; no header means no table here.
+    const hsnHdr = words.filter((w) => w.text === 'HSN' && w.x > 300);
+    if (!hsnHdr.length) return;
+    const headerY = Math.min(...hsnHdr.map((w) => w.y));
+    const anchors = words
+      .filter((w) => /^\d{5,7}$/.test(w.text) && w.x < 110 && w.y > headerY + 3)
+      .sort((a, b) => a.y - b.y);
+    anchors.forEach((a, i) => {
+      const prevY = i > 0 ? anchors[i - 1].y : -Infinity;
+      const nextY = i + 1 < anchors.length ? anchors[i + 1].y : Infinity;
+      const band = words.filter((w) => {
+        if (w === a || Math.abs(w.y - a.y) > 9) return false;
+        // nearest anchor wins, so a wrapped name line goes to the row it hugs
+        return Math.abs(w.y - a.y) <= Math.abs(w.y - prevY) && Math.abs(w.y - a.y) <= Math.abs(w.y - nextY);
+      });
+      const name = band.filter((w) => w.x >= 110 && w.x < 400).sort((p, q) => p.y - q.y || p.x - q.x).map((w) => w.text).join(' ');
+      const qtyWord = band.filter((w) => w.x > 470 && BLINKIT_NUM_RE.test(w.text)).sort((p, q) => q.x - p.x)[0];
+      const qty = qtyWord ? blinkitNum(qtyWord.text) : 0;
+      if (name && qty > 0) rows.push({ code: a.text, name, qty, price: 0, total: 0 });
+    });
+  });
+  return rows;
+}
+
+function parseBlinkitGrnTableWords(pages) {
+  const rows = [];
+  pages.forEach((words) => {
+    // Header "HSN" (x ≈ 180) is distinct from the tax-summary table's own HSN
+    // column further down the page (x ≈ 50) — only the former starts the items.
+    const hsnHdr = words.filter((w) => w.text === 'HSN' && w.x > 150 && w.x < 260);
+    if (!hsnHdr.length) return;
+    const headerY = Math.min(...hsnHdr.map((w) => w.y));
+    // The items end at the lone "Total" line (not the header's "Total Tax").
+    const totals = words.filter((w) => w.text === 'Total' && w.x > 100 && w.x < 250 && w.y > headerY);
+    const footerY = totals.length ? Math.min(...totals.map((w) => w.y)) : Infinity;
+    const anchors = words
+      .filter((w) => /^\d{5,7}$/.test(w.text) && w.x < 70 && w.y > headerY && w.y < footerY)
+      .sort((a, b) => a.y - b.y);
+    anchors.forEach((a, i) => {
+      const prevY = i > 0 ? anchors[i - 1].y : -Infinity;
+      const nextY = i + 1 < anchors.length ? anchors[i + 1].y : Infinity;
+      const nums = words
+        .filter((w) => w !== a && Math.abs(w.y - a.y) < 2 && w.x >= 165 && BLINKIT_NUM_RE.test(w.text))
+        .sort((p, q) => p.x - q.x);
+      const hi = nums.findIndex((w) => /^\d{8}$/.test(w.text)); // HSN opens the numeric run
+      if (hi < 0) return;
+      const n = nums.slice(hi + 1); // ordered, delivered, GRN qty, damaged, price/unit, tax, amount
+      if (n.length < 7) return;
+      const qty = blinkitNum(n[2].text);
+      const price = blinkitNum(n[4].text);
+      const total = blinkitNum(n[6].text);
+      const name = words
+        .filter((w) => w.x >= 75 && w.x < 168 && w.y < footerY && Math.abs(w.y - a.y) <= 11
+          && Math.abs(w.y - a.y) <= Math.abs(w.y - prevY) && Math.abs(w.y - a.y) <= Math.abs(w.y - nextY))
+        .sort((p, q) => p.y - q.y || p.x - q.x)
+        .map((w) => w.text).join(' ');
+      if (qty > 0 && name) rows.push({ code: a.text, name, qty, price, total });
+    });
+  });
+  return rows;
+}
+
+
 // ── Sales (mobile) — same verified logic as the admin panel, laid out in a
 // single narrow column instead of the admin's wide multi-panel grid ──
 function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
@@ -5042,7 +5177,11 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
     };
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     if (isPdf) {
-      extractPdfText(file).then((t) => finish(parsePoPdfText(t), file.name, t)).catch(() => setPoError('Could not read this PDF.'));
+      extractPdfText(file).then(async (t) => {
+          let rows = parsePoPdfText(t);
+          if (!rows.length) rows = parseBlinkitPoScheduleWords(await extractPdfWords(file)); // Blinkit's newer PO schedule
+          finish(rows, file.name, t);
+        }).catch(() => setPoError('Could not read this PDF.'));
       e.target.value = ''; return;
     }
     const reader = new FileReader();
@@ -5066,7 +5205,11 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
     };
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     if (isPdf) {
-      extractPdfText(file).then((t) => finish(parseGrnPdfText(t), file.name)).catch(() => setGrnError('Could not read this PDF.'));
+      extractPdfText(file).then(async (t) => {
+          let rows = parseGrnPdfText(t);
+          if (!rows.length) rows = parseBlinkitGrnTableWords(await extractPdfWords(file)); // Blinkit's newer GRN layout
+          finish(rows, file.name);
+        }).catch(() => setGrnError('Could not read this PDF.'));
       e.target.value = ''; return;
     }
     const reader = new FileReader();
@@ -5083,7 +5226,7 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
   const comparison = useMemo(() => bf.poRows.map((po) => {
     const cr = matchChannelRow(po, bf.costRows, items);
     const ourCost = cr && cr.finalPricePerPack != null ? cr.finalPricePerPack : null;
-    const margin = ourCost == null ? null : Math.round((po.price - ourCost) * 100) / 100;
+    const margin = (ourCost == null || !po.price) ? null : Math.round((po.price - ourCost) * 100) / 100; // Blinkit's newer PO schedule has no price — no margin to show
     return { po, ourCost, margin };
   }), [bf.poRows, bf.costRows, items]);
 
@@ -5158,7 +5301,7 @@ function SalesBatchDetailMobile({ bf, items, reports, onBack, onUploadGrn, onUpd
                 <div style={{ fontSize: 12, fontWeight: 700 }}>{c.po.name || c.po.code}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED }}>
                   <span>Our cost: {c.ourCost == null ? 'No match' : money(c.ourCost)}</span>
-                  <span>PO: {money(c.po.price)}</span>
+                  <span>PO: {c.po.price ? money(c.po.price) : "—"}</span>
                   <span style={{ fontWeight: 700, color: c.margin == null ? MUTED : (good ? LEAF : TOMATO) }}>{c.margin == null ? '—' : `${c.margin >= 0 ? '+' : ''}${money(c.margin)}`}</span>
                 </div>
               </div>
