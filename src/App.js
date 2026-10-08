@@ -875,9 +875,12 @@ export default function FnvMobilePreview() {
   // wiped the next time the packer updates their own progress.
   const assignPackingTask = (key, userId, userName) => fbSetDoc('packingAssignments', key, { assignedTo: userId, assignedToName: userName, city: effectiveCity });
   const unassignPackingTask = (key) => fbDelete('packingAssignments', key);
+  // A tick belongs to one purchase "cycle": the set of released indents it was made against. Releasing a new
+  // indent (or un-releasing one) changes this signature, so older ticks stop showing and the list starts fresh.
+  const purchaseCycleSig = (indentBatches || []).filter((x) => x.released && (x.city || CITIES[0]) === effectiveCity).map((x) => x.id).sort().join('|');
   // One doc per item (id = item id), so ticking the same item twice just rewrites it.
   const setPurchaseOrderPlacedFor = (itemId, placed) => (placed
-    ? fbSetDoc('purchaseOrderPlaced', itemId, { id: itemId, itemId, placedByName: (currentUser && currentUser.name) || '', at: Date.now(), day: todayLocalDate(), city: effectiveCity })
+    ? fbSetDoc('purchaseOrderPlaced', itemId, { id: itemId, itemId, cycle: purchaseCycleSig, placedByName: (currentUser && currentUser.name) || '', at: Date.now(), day: todayLocalDate(), city: effectiveCity })
     : fbDelete('purchaseOrderPlaced', itemId));
   const clearPurchaseOrderPlaced = (itemIds) => {
     const ids = Object.keys(purchaseOrderPlaced).slice(0, 450); // reset wipes every shared tick, including old/hidden ones
@@ -1035,7 +1038,7 @@ export default function FnvMobilePreview() {
               onResetOldOrders={resetOldOrders}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={Object.fromEntries(Object.entries(purchaseOrderPlaced).filter(([, v]) => v && v.day === todayLocalDate()))} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={Object.fromEntries(Object.entries(purchaseOrderPlaced).filter(([, v]) => v && v.day === todayLocalDate() && (v.cycle || '') === purchaseCycleSig))} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
           {tab === 'grading' && (
             <GradingTabMobile
               items={cityItems}
@@ -3599,7 +3602,8 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
       indexRecipe(loose(r.name), r);
     });
     const pickRecipes = (name) => {
-      const all = recipesByOutput[nk(name)] || recipesByOutput[loose(name)] || [];
+      // the bracket-less fallback only applies to processed (CUT) items, so a raw "PUMPKIN" is never swapped for the "PUMPKIN (CUT)" recipe
+      const all = recipesByOutput[nk(name)] || (catByName[nrm(name)] === 'CUT' ? recipesByOutput[loose(name)] : null) || [];
       if (all.length === 0) return [];
       // Prefer recipes made for this city's own item; otherwise reuse one other city's recipe (never sum duplicates across cities).
       const local = all.filter((r) => cityIds.has(r.outputItemId));
@@ -3613,7 +3617,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     };
     const explode = (name, qty, unit, depth) => {
       // ignore a recipe that lists the very item being expanded as an ingredient (e.g. "Banana (pack)" made from Banana)
-      const recs = depth < 5 ? pickRecipes(name).filter((r) => !(r.ingredients || []).some((ing) => itemById[ing.itemId] && loose(itemById[ing.itemId].name) === loose(name))) : [];
+      const recs = depth < 5 ? pickRecipes(name).filter((r) => !(r.ingredients || []).some((ing) => itemById[ing.itemId] && nk(itemById[ing.itemId].name) === nk(name))) : [];
       if (recs.length > 0) {
         recs.forEach((recipe) => {
           (recipe.ingredients || []).forEach((ing) => {
