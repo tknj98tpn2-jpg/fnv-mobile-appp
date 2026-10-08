@@ -3660,7 +3660,6 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
       .filter((o) => !o.batchId || releasedBatchIds.has(o.batchId))
       .map((o) => o.id);
   }, [orders, indentBatches]);
-  const excludedOrderIds = useMemo(() => orders.filter((o) => o.excludeFromPurchase && o.status !== 'dispatched').map((o) => o.id), [orders]);
 
   // "Available stock" = latest nightly stock count (if any) as baseline, plus every
   // actual completed purchase made since — "requirement" rows (from released indents /
@@ -4064,14 +4063,6 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
         >
           <RotateCcw size={13} /> Reset items needing purchase
         </button>
-        {excludedOrderIds.length > 0 && (
-          <button
-            onClick={() => onRestoreExcluded(excludedOrderIds)}
-            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 10, padding: '9px 0', fontWeight: 700, fontSize: 12, cursor: 'pointer', marginTop: 8 }}
-          >
-            Restore {excludedOrderIds.length} hidden
-          </button>
-        )}
       </Card>
 
       {confirmingPurchaseReset && (
@@ -4117,7 +4108,7 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
           </button>
         )}
 
-        {filteredItems.map((it) => {
+        {[...filteredItems.filter((it) => !orderPlacedIds.includes(it.id)), ...filteredItems.filter((it) => orderPlacedIds.includes(it.id))].map((it) => { // ticked (order placed) items sink to the bottom, un-ticked stay on top
           const isSelected = selectMode && selectedItemIds.includes(it.id);
           const isPlaced = orderPlacedIds.includes(it.id);
           return (
