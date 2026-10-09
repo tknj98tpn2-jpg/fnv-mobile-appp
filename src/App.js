@@ -6590,6 +6590,51 @@ function DispatchFillDetailMobile({ batch, orders, onBack }) {
   );
 }
 
+
+// "Short items" view for Dispatch: every article Packaging marked short (e.g. indent 100, packed 90 -> 10 short),
+// grouped channel-wise for the chosen fulfilment date.
+function ShortItemsView({ orders, dispatchDate, setDispatchDate, compact }) {
+  const shortOrders = useMemo(
+    () => orders.filter((o) => (o.shortQty || 0) > 0 && (!dispatchDate || o.fulfilmentDate === dispatchDate)),
+    [orders, dispatchDate],
+  );
+  const channels = PLATFORMS.map((p) => ({ platform: p, rows: shortOrders.filter((o) => o.platform === p).slice().sort((a, b) => String(a.articleName || a.product).localeCompare(String(b.articleName || b.product))) })).filter((c) => c.rows.length > 0);
+  const dateRow = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+      <input type="date" value={dispatchDate} onChange={(e) => setDispatchDate(e.target.value)} style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, padding: '7px 8px', fontWeight: 700, background: '#fff' }} />
+      {dispatchDate !== todayLocalDate() && <button onClick={() => setDispatchDate(todayLocalDate())} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Today</button>}
+      {dispatchDate && <button onClick={() => setDispatchDate('')} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>All dates</button>}
+    </div>
+  );
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 12 : 18 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 14, color: INK, marginBottom: 4 }}>Short items ({shortOrders.length})</div>
+        <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Articles marked short in Packaging — ordered in the indent but not fully packed — channel-wise{dispatchDate ? ` for ${dispatchDate}` : ' (all dates)'}.</div>
+        {dateRow}
+      </div>
+      {channels.map((c) => (
+        <div key={c.platform} style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: INK, marginBottom: 8 }}>{c.platform} <span style={{ color: MUTED, fontWeight: 600 }}>· {c.rows.length} short</span></div>
+          {c.rows.map((o) => (
+            <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10, borderTop: `1px solid ${LINE}`, padding: '8px 0' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{o.articleName || o.product}</div>
+                <div style={{ fontSize: 11, color: MUTED }}>{orderStore(o) ? `${orderStore(o)} · ` : ''}{o.fulfilmentDate || ''} · {o.id}</div>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <div style={{ fontSize: 11, color: MUTED }}>Ordered {renderIndentQty(o, o.qty)}</div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: TOMATO }}>{renderIndentQty(o, o.shortQty)} short</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+      {channels.length === 0 && <div style={{ textAlign: 'center', color: MUTED, fontSize: 12, padding: '20px 0' }}>No short items{dispatchDate ? ` on ${dispatchDate}` : ''}.</div>}
+    </div>
+  );
+}
+
 function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBatch }) {
   const packed = useMemo(() => orders
     .filter((o) => o.status === 'packed')
@@ -6643,6 +6688,7 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
         <Chip label="Dispatch" active={view === 'dispatch'} onClick={() => setView('dispatch')} />
         <Chip label={`History (${dispatchLog.length})`} active={view === 'history'} onClick={() => setView('history')} />
         <Chip label={`Dispatch Fills (${indentBatches.length})`} active={view === 'fills'} onClick={() => setView('fills')} />
+        <Chip label={`Short items (${orders.filter((o) => (o.shortQty || 0) > 0).length})`} active={view === 'short'} onClick={() => setView('short')} />
       </div>
 
       {view === 'dispatch' && (
@@ -6722,6 +6768,8 @@ function DispatchTab({ orders, crates, dispatchLog, indentBatches, onDispatchBat
           {dispatchLog.length === 0 && <div style={hint}>No dispatches yet.</div>}
         </Card>
       )}
+
+      {view === 'short' && <Card><ShortItemsView orders={orders} dispatchDate={dispatchDate} setDispatchDate={setDispatchDate} compact /></Card>}
 
       {view === 'fills' && (
         <Card>
