@@ -164,6 +164,7 @@ const NAV = [
   { key: 'pricing', label: 'Pricing', icon: IndianRupee },
   { key: 'sales', label: 'Sales', icon: Wallet },
   { key: 'packaging', label: 'Packaging', icon: PackageCheck },
+  { key: 'workorder', label: 'Work Order', icon: ClipboardList },
   { key: 'dispatch', label: 'Dispatch', icon: Truck },
   { key: 'crates', label: 'Crates & boxes', icon: Boxes },
   { key: 'users', label: 'Users & Roles', icon: Users },
@@ -576,6 +577,7 @@ export default function FnvMobilePreview() {
   const visibleNav = NAV.filter((n) => {
     if (n.key === 'attendance') return hasPermission(currentRole?.permissions, 'attendance') && !hasSensitivePermission(currentRole?.permissions, 'staff');
     if (n.key === 'staff') return hasSensitivePermission(currentRole?.permissions, 'staff');
+    if (n.key === 'workorder') return isAdminRoleName(currentRole) || hasSensitivePermission(currentRole?.permissions, 'workorder');
     return hasPermission(currentRole?.permissions, n.key);
   });
   // If the active tab isn't one this user's role can see — because their role
@@ -1072,6 +1074,7 @@ export default function FnvMobilePreview() {
           {tab === 'dispatch' && (
             <DispatchTab orders={cityOperationalOrders} crates={cityCrates} dispatchLog={cityDispatchLog} indentBatches={cityIndentBatches} onDispatchBatch={dispatchBatch} />
           )}
+          {tab === 'workorder' && <div style={{ padding: 16 }}><WorkOrderView orders={cityOperationalOrders} packingProgress={packingProgress} packingAssignments={packingAssignments} users={users} roles={roles} currentUser={currentUser} onAssign={assignPackingTask} onUnassign={unassignPackingTask} /></div>}
           {tab === 'crates' && <CratesTab crates={cityCrates} log={cityCrateLog} onAdjust={adjustCrates} />}
           {tab === 'users' && (
             <UsersRolesTab
@@ -6036,6 +6039,127 @@ function PricingTab({ orders, items, purchases, pricingConfig, city, onUpdate })
 
 
 
+
+// ---------------------------------------------------------------------------
+// Work Order: the packing articles assigned to each staff member (assignments are made in Packaging).
+// A staff member with this permission only ever sees their OWN assigned articles; the Admin role sees every
+// staff member's list and can reassign / unassign.
+// ---------------------------------------------------------------------------
+const isAdminRoleName = (role) => !!role && String(role.name || '').trim().toLowerCase() === 'admin';
+function buildWorkOrderTargets(orders, packingProgress, packingAssignments) {
+  const open = orders.filter((o) => o.status !== 'dispatched');
+  const keyer = disambiguateByArticle(open, (o) => {
+    const dateKey = o.fulfilmentDate || 'No date';
+    const hasPack = !!(o.packQty && o.packSize);
+    const cityKey = o.city || CITIES[0];
+    return hasPack ? `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.platform}__${o.packSize}__${o.packUnit}` : `${cityKey}__${dateKey}__${sanitizeKeyPart(o.product)}__${o.unit}`;
+  });
+  const map = {};
+  open.forEach((o) => {
+    const key = keyer(o);
+    if (!packingAssignments[key]) return; // only articles somebody has been assigned
+    const hasPack = !!(o.packQty && o.packSize);
+    const t = (map[key] = map[key] || { key, date: o.fulfilmentDate || 'No date', product: o.product, articleName: o.articleName || o.product, unit: o.unit, qty: 0, platforms: new Set(), hasPack, packSize: o.packSize, packUnit: o.packUnit, rawUnit: o.rawUnit || '', targetPacks: 0, pendingIds: [] });
+    t.qty += o.qty;
+    t.platforms.add(o.platform);
+    if (hasPack) t.targetPacks += o.packQty;
+    if (o.status === 'pending') t.pendingIds.push(o.id);
+  });
+  return Object.values(map).map((t) => {
+    const progress = packingProgress[t.key] || { packedQty: 0, shortQty: 0 };
+    const a = packingAssignments[t.key];
+    const target = t.hasPack ? t.targetPacks : t.qty;
+    const done = t.hasPack ? progress.packedQty : (t.pendingIds.length === 0 ? t.qty : 0);
+    const isComplete = t.hasPack ? (progress.packedQty > 0 && progress.packedQty + progress.shortQty >= t.targetPacks) : (t.pendingIds.length === 0);
+    return { ...t, target, done, shortQty: progress.shortQty || 0, isComplete, assignedTo: a.assignedTo, assignedToName: a.assignedToName || '' };
+  });
+}
+function WorkOrderView({ orders, packingProgress, packingAssignments, users, roles, currentUser, onAssign, onUnassign }) {
+  const myRole = currentUser ? roles.find((r) => r.id === currentUser.roleId) : null;
+  const isAdmin = isAdminRoleName(myRole);
+  const [dateFilter, setDateFilter] = usePersistedState('fnv_workorder_date', '');
+  const [staffFilter, setStaffFilter] = useState('');
+  const all = useMemo(() => buildWorkOrderTargets(orders, packingProgress, packingAssignments), [orders, packingProgress, packingAssignments]);
+  // Non-admins are filtered down to their own id here — nobody else's assignments ever reach the screen.
+  const visible = useMemo(() => all
+    .filter((t) => (isAdmin ? true : !!currentUser && t.assignedTo === currentUser.id))
+    .filter((t) => !dateFilter || t.date === dateFilter)
+    .filter((t) => !isAdmin || !staffFilter || t.assignedTo === staffFilter),
+  [all, isAdmin, currentUser, dateFilter, staffFilter]);
+  const dates = useMemo(() => Array.from(new Set(all.filter((t) => isAdmin || (currentUser && t.assignedTo === currentUser.id)).map((t) => t.date))).sort(), [all, isAdmin, currentUser]);
+  const assignees = useMemo(() => {
+    const okRoleIds = new Set(roles.filter((r) => r.permissions?.workorder === true).map((r) => r.id)); // anyone whose role has Work Order permission
+    return users.filter((u) => u.status === 'active' && okRoleIds.has(u.roleId));
+  }, [users, roles]);
+  const nameOf = (id, fallback) => (users.find((u) => u.id === id)?.name) || fallback || 'Unknown';
+  const qtyText = (t, n) => (t.hasPack ? `${n} pack${n === 1 ? '' : 's'}` : `${Math.round(n * 100) / 100} ${t.unit || ''}`);
+  const sortOpenFirst = (arr) => arr.slice().sort((a, b) => (a.isComplete === b.isComplete ? String(a.date).localeCompare(String(b.date)) : a.isComplete ? 1 : -1));
+
+  const row = (t) => (
+    <div key={t.key} style={{ borderTop: `1px solid ${LINE}`, padding: '9px 0', opacity: t.isComplete ? 0.6 : 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{t.articleName || t.product}</div>
+          <div style={{ fontSize: 11, color: MUTED }}>{[...t.platforms].join(' + ')}{t.hasPack ? ` · ${t.rawUnit || `${t.packSize}${t.packUnit}/pack`}` : ''} · {t.date}</div>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: t.isComplete ? LEAF : TOMATO }}>{qtyText(t, t.target)}</div>
+          <div style={{ fontSize: 11, color: MUTED }}>{t.isComplete ? 'Done' : `Packed ${qtyText(t, t.done)}`}{t.shortQty > 0 ? ` · ${t.shortQty} short` : ''}</div>
+        </div>
+      </div>
+      {isAdmin && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
+          <SmartSelect value={t.assignedTo} onChange={(e) => { const u = users.find((x) => x.id === e.target.value); if (u) onAssign(t.key, u.id, u.name); }} style={{ flex: 1, borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, padding: '6px 8px', background: '#fff' }}>
+            {[...assignees, ...(assignees.some((u) => u.id === t.assignedTo) ? [] : [{ id: t.assignedTo, name: nameOf(t.assignedTo, t.assignedToName) }])].map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </SmartSelect>
+          <button onClick={() => onUnassign(t.key)} style={{ background: 'none', border: `1px solid ${LINE}`, color: TOMATO, borderRadius: 8, fontSize: 11, fontWeight: 700, padding: '6px 10px', cursor: 'pointer' }}>Unassign</button>
+        </div>
+      )}
+    </div>
+  );
+
+  // Admin: one block per staff member.
+  const staffBlocks = isAdmin
+    ? Object.values(visible.reduce((m, t) => { (m[t.assignedTo] = m[t.assignedTo] || { id: t.assignedTo, name: nameOf(t.assignedTo, t.assignedToName), rows: [] }).rows.push(t); return m; }, {})).sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+  const staffOptions = Array.from(new Map(all.map((t) => [t.assignedTo, nameOf(t.assignedTo, t.assignedToName)])).entries());
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{isAdmin ? `Work Orders — all staff (${visible.length})` : `My work order (${visible.filter((t) => !t.isComplete).length} to pack)`}</div>
+        <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{isAdmin ? 'Which article has been given to which staff member to pack, with progress. Assign articles from Packaging.' : 'Articles assigned to you for packing. Pack them from the Packaging section.'}</div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <SmartSelect value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, padding: '8px 8px', background: '#fff' }}>
+          <option value="">All dates</option>
+          {dates.map((d) => <option key={d} value={d}>{d}</option>)}
+        </SmartSelect>
+        {isAdmin && (
+          <SmartSelect value={staffFilter} onChange={(e) => setStaffFilter(e.target.value)} style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, padding: '8px 8px', background: '#fff' }}>
+            <option value="">All staff</option>
+            {staffOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </SmartSelect>
+        )}
+      </div>
+      {isAdmin ? staffBlocks.map((b) => (
+        <div key={b.id} style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <div style={{ fontWeight: 800, fontSize: 13, color: INK }}>{b.name}</div>
+            <div style={{ fontSize: 11, color: MUTED, fontWeight: 700 }}>{b.rows.filter((t) => t.isComplete).length} / {b.rows.length} done</div>
+          </div>
+          {sortOpenFirst(b.rows).map(row)}
+        </div>
+      )) : (
+        <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+          {sortOpenFirst(visible).map(row)}
+        </div>
+      )}
+      {visible.length === 0 && <div style={{ textAlign: 'center', color: MUTED, fontSize: 12, padding: '20px 0' }}>{isAdmin ? 'No articles have been assigned yet.' : 'Nothing is assigned to you right now.'}</div>}
+    </div>
+  );
+}
+
 function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdatePackedQty, packingAssignments, onAssignTask, onUnassignTask, users, roles, currentUser }) {
   const [platformFilter, setPlatformFilter] = usePersistedState('fnv_packaging_platform', 'All');
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_packaging_category', 'All');
@@ -6048,13 +6172,15 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
   const [assignModalKeys, setAssignModalKeys] = useState(null); // array of keys, or null when closed
 
   const packerUsers = useMemo(() => {
-    const packerRoleIds = new Set(roles.filter((r) => (r.name || '').trim().toLowerCase() === 'packer').map((r) => r.id));
+    const packerRoleIds = new Set(roles.filter((r) => r.permissions?.workorder === true).map((r) => r.id)); // any role with Work Order permission (not only "Packer")
     return users.filter((u) => packerRoleIds.has(u.roleId) && u.status === 'active');
   }, [users, roles]);
   const isPackerViewer = useMemo(() => {
     const role = currentUser ? roles.find((r) => r.id === currentUser.roleId) : null;
     return !!role && (role.name || '').trim().toLowerCase() === 'packer';
   }, [currentUser, roles]);
+  // Only the Admin role may see WHO an article is assigned to; everyone else just sees that it is assigned.
+  const isAdminViewer = isAdminRoleName(currentUser ? roles.find((r) => r.id === currentUser.roleId) : null);
 
   const categoryByProduct = useMemo(() => {
     const map = {};
@@ -6099,7 +6225,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
           const progress = packingProgress[t.key] || { packedQty: 0, shortQty: 0 };
           const isComplete = t.hasPack ? (progress.packedQty > 0 && progress.packedQty + progress.shortQty >= t.targetPacks) : (t.pendingIds.length === 0);
           const assignment = packingAssignments[t.key] || null;
-          return { ...t, isComplete, assignedTo: assignment?.assignedTo || null, assignedToName: assignment?.assignedToName || '' };
+          return { ...t, isComplete, assignedTo: assignment?.assignedTo || null, assignedToName: (isAdminViewer || (currentUser && assignment?.assignedTo === currentUser.id)) ? (assignment?.assignedToName || '') : '' };
         });
         // A packer only ever sees the articles assigned to them — the tab stays a
         // personal task queue for that role, while every other role keeps seeing
@@ -6119,7 +6245,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
         if (b.date === 'No date') return -1;
         return a.date.localeCompare(b.date);
       });
-  }, [filteredOrders, qtySort, packingProgress, itemSearch, packingAssignments, isPackerViewer, currentUser]);
+  }, [filteredOrders, qtySort, packingProgress, itemSearch, packingAssignments, isPackerViewer, isAdminViewer, currentUser]);
 
   const categoriesPresent = useMemo(() => ['All', ...Array.from(new Set(items.map((it) => it.category).filter(Boolean)))], [items]);
 
@@ -6229,7 +6355,7 @@ function PackagingTab({ orders, items, onAdvanceMany, packingProgress, onUpdateP
         <AssignWorkerModal
           keys={assignModalKeys}
           packerUsers={packerUsers}
-          currentlyAssigned={assignModalKeys.length === 1 ? packingAssignments[assignModalKeys[0]] : null}
+          currentlyAssigned={assignModalKeys.length === 1 && isAdminViewer ? packingAssignments[assignModalKeys[0]] : null}
           onClose={() => setAssignModalKeys(null)}
           onAssign={(userId, userName) => {
             assignModalKeys.forEach((k) => onAssignTask(k, userId, userName));
@@ -6922,7 +7048,7 @@ function UsersRolesTab({ users, roles, onAddUser, onUpdateUser, onDeleteUser, on
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', marginTop: 6 }}>
                 {PERMISSION_SECTIONS.map((s) => {
-                  const isSensitive = ['staff', 'advanceindent'].includes(s.key);
+                  const isSensitive = ['staff', 'advanceindent', 'workorder'].includes(s.key);
                   const active = isSensitive ? hasSensitivePermission(r.permissions, s.key) : hasPermission(r.permissions, s.key);
                   return <Chip key={s.key} label={s.label} active={active} onClick={() => onToggleRolePermission(r.id, s.key, !active)} />;
                 })}
