@@ -459,6 +459,9 @@ export default function FnvMobilePreview() {
   const [purchaseOrderPlaced, setPurchaseOrderPlaced] = useState({}); // { [itemId]: { placedByName, at, city } } — shared "order already placed" ticks on the Purchase list
   const [stockCounts, setStockCounts] = useState([]); // nightly closing-stock entries, one per item per date
   const [pricingConfig, setPricingConfig] = useState([]); // editable per-article pricing inputs
+  const [itemPrices, setItemPrices] = useState([]); // unit price history entered on the Purchase page
+  const [plSnapshots, setPlSnapshots] = useState([]); // frozen per-batch cost (P&L), written at 5 PM on the supply date
+  const [dataLoaded, setDataLoaded] = useState(false); // every collection has delivered its first snapshot
   const [grnReports, setGrnReports] = useState([]); // uploaded GRN files per channel + day
   const [gradingRecords, setGradingRecords] = useState([]); // per-item quality grading entries (Grade A / Grade B / Dump split)
   const [salesInvoices, setSalesInvoices] = useState([]);
@@ -489,13 +492,16 @@ export default function FnvMobilePreview() {
       setDbReady(true);
     })();
 
-    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','pricingConfig','grnReports','gradingRecords','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
-    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, pricingConfig: setPricingConfig, grnReports: setGrnReports, gradingRecords: setGradingRecords, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
+    const cols = ['items','orders','purchases','recipes','roles','users','vendors','vendorLedger','placedOrders','indentBatches','crateLog','dispatchLog','stockCounts','pricingConfig','itemUnitPrice','plSnapshots','grnReports','gradingRecords','staff','staffAttendance','staffAdvances','salesInvoices','salesPayments'];
+    const setters = { items: setItems, orders: setOrders, purchases: setPurchases, recipes: setRecipes, roles: setRoles, users: setUsers, vendors: setVendors, vendorLedger: setVendorLedger, placedOrders: setPlacedOrders, indentBatches: setIndentBatches, crateLog: setCrateLog, dispatchLog: setDispatchLog, stockCounts: setStockCounts, pricingConfig: setPricingConfig, itemUnitPrice: setItemPrices, plSnapshots: setPlSnapshots, grnReports: setGrnReports, gradingRecords: setGradingRecords, staff: setStaff, staffAttendance: setStaffAttendance, staffAdvances: setStaffAdvances, salesInvoices: setSalesInvoices, salesPayments: setSalesPayments };
 
+    const loadedCols = new Set();
     const unsubs = cols.map((col) =>
       onSnapshot(collection(db, col), (snap) => {
         const data = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
         setters[col](data);
+        loadedCols.add(col);
+        if (loadedCols.size === cols.length) setDataLoaded(true);
       })
     );
 
@@ -690,6 +696,15 @@ export default function FnvMobilePreview() {
   const fbUpdate = (col, id, patch)  => updateDoc(doc(db, col, id), patch);
   const fbDelete = (col, id)         => deleteDoc(doc(db, col, id));
   const fbSetDoc = (col, id, obj)    => setDoc(doc(db, col, id), obj);
+
+  // Unit prices (entered on the Purchase page) behave like 1-unit purchases for pricing only.
+  const pricingPurchases = useMemo(
+    () => [...purchases.filter((p) => (p.city || CITIES[0]) === effectiveCity), ...itemPricesAsPurchases(itemPrices.filter((r) => (r.city || CITIES[0]) === effectiveCity))],
+    [purchases, itemPrices, effectiveCity]
+  );
+  // P&L cost freeze: at 5:00 PM on a batch's supply date its per-article cost is written once and then never moves.
+  useBatchCostFreeze(dataLoaded, { indentBatches, orders, items, purchases, itemPrices, pricingConfig, recipes }, plSnapshots, (snap) => fbSetDoc('plSnapshots', snap.id, snap));
+  const plSnapshotsById = useMemo(() => { const m = {}; plSnapshots.forEach((s) => { m[s.id] = s; }); return m; }, [plSnapshots]);
 
   const addItem = (it) => fbSetDoc('items', it.id, { ...it, city: effectiveCity });
   const addItemsBulk = (newItems) => { const b = writeBatch(db); newItems.forEach((it) => b.set(doc(db,'items',it.id), { ...it, city: effectiveCity })); b.commit(); };
@@ -929,6 +944,13 @@ export default function FnvMobilePreview() {
   const savePlacedOrder = (order) => fbSetDoc('placedOrders', order.id, order);
   const updatePlacedOrder = (id, itemsList) => fbUpdate('placedOrders', id, { items: itemsList });
   const deletePlacedOrder = (id) => fbDelete('placedOrders', id);
+  // Unit price for one item (price of 1 purchase unit). Kept as history - each save is a new record -
+  // so the price in force at any past moment (P&L freeze) can be rebuilt. Never touches purchases / vendor ledger.
+  const saveItemUnitPrice = ({ itemId, itemName, unit, unitPrice }) => {
+    const at = localStamp();
+    const id = `UP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
+    fbSetDoc('itemUnitPrice', id, { id, itemId, itemName, unit: unit || '', unitPrice: Number(unitPrice), at, date: at.slice(0, 10), city: effectiveCity, by: (currentUser && currentUser.name) || '' });
+  };
   const addLedgerEntry = (entry) => {
     fbSetDoc('vendorLedger', entry.id, { ...entry, city: effectiveCity });
     addPurchase({ id: `P-${Date.now().toString(36).toUpperCase().slice(-5)}`, itemId: entry.itemId || null, item: entry.itemName, supplier: entry.vendorName, qty: entry.qty, unit: entry.unit, cost: entry.total, source: entry.payment === 'credit' ? `Credit — ${entry.vendorName}` : entry.payment, date: entry.date });
@@ -964,6 +986,7 @@ export default function FnvMobilePreview() {
   const cityOrders = orders.filter((o) => (o.city || CITIES[0]) === effectiveCity);
   const cityOperationalOrders = cityOrders.filter((o) => !o.isAdvance);
   const cityPurchases = purchases.filter((p) => (p.city || CITIES[0]) === effectiveCity);
+  const cityItemPrices = itemPrices.filter((r) => (r.city || CITIES[0]) === effectiveCity);
   const cityIndentBatches = indentBatches.filter((b) => (b.city || CITIES[0]) === effectiveCity);
   const cityStockCounts = stockCounts.filter((sc) => (sc.city || CITIES[0]) === effectiveCity);
   const cityDispatchLog = dispatchLog.filter((d) => (d.city || CITIES[0]) === effectiveCity);
@@ -1040,7 +1063,7 @@ export default function FnvMobilePreview() {
               onResetOldOrders={resetOldOrders}
             />
           )}
-          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} onAddLedgerEntry={addLedgerEntry} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={Object.fromEntries(Object.entries(purchaseOrderPlaced).filter(([, v]) => v && v.day === todayLocalDate() && (v.cycle || '') === purchaseCycleSig))} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
+          {tab === 'purchase' && <PurchasesTab purchases={cityPurchases} orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} vendors={cityVendors} vendorLedger={cityVendorLedger} stockCounts={cityStockCounts} itemPrices={cityItemPrices} onSaveItemUnitPrice={saveItemUnitPrice} onSavePlacedOrder={savePlacedOrder} indentBatches={cityIndentBatches} onDeleteOldPurchases={removePurchasesByIds} onResetPurchaseNeeds={excludeOldOrdersFromPurchase} onRestoreExcluded={restoreExcludedOrders} orderPlacedMap={Object.fromEntries(Object.entries(purchaseOrderPlaced).filter(([, v]) => v && v.day === todayLocalDate() && (v.cycle || '') === purchaseCycleSig))} onSetOrderPlaced={setPurchaseOrderPlacedFor} onClearOrderPlaced={clearPurchaseOrderPlaced} />}
           {tab === 'grading' && (
             <GradingTabMobile
               items={cityItems}
@@ -1050,12 +1073,15 @@ export default function FnvMobilePreview() {
             />
           )}
           {tab === 'stockcount' && <StockCountTab items={cityItems} stockCounts={cityStockCounts} purchases={cityPurchases} dispatchLog={cityDispatchLog} onRecord={recordStockCount} onReset={resetStockCounts} />}
-          {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} purchases={cityPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
+          {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} purchases={pricingPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
           {tab === 'sales' && (
             <SalesTabMobile
               items={cityItems}
+              allItems={items}
+              recipes={recipes}
+              plSnapshots={plSnapshotsById}
               orders={cityOrders}
-              purchases={cityPurchases}
+              purchases={pricingPurchases}
               pricingConfig={pricingConfig}
               grnReports={cityGrnReports}
               indentBatches={cityIndentBatches}
@@ -3023,6 +3049,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
   const [pendingIndent, setPendingIndent] = useState(null); // { platform, fileName, rows, fulfilmentDate, isAdvance }
   const [confirmingOrdersReset, setConfirmingOrdersReset] = useState(false);
   const [resetBeforeDate, setResetBeforeDate] = useState('');
+  const [releasedDateFilter, setReleasedDateFilter] = useState('');
   const advanceFileRef = useRef(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState(new Set());
   const [fileError, setFileError] = useState('');
@@ -3209,6 +3236,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     setResetBeforeDate('');
   };
 
+  // Not-yet-released indents still need action, so they always stay visible; released ones are history,
+  // shown only for a chosen purchase date (same as the admin panel) so old orders don't pile up.
+  const pendingReleaseBatches = indentBatches.filter((b) => !b.released);
+  const releasedBatches = indentBatches.filter((b) => b.released);
+  const releasedBatchesForDate = releasedDateFilter ? releasedBatches.filter((b) => b.purchaseDate === releasedDateFilter) : [];
+
   return (
     <div style={{ padding: 16 }}>
       {indentBatches.length > 0 && (
@@ -3249,7 +3282,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
               </div>
             </div>
           )}
-          {indentBatches.map((b) => (
+          {pendingReleaseBatches.map((b) => (
             <ReleaseBatchCard
               key={b.id}
               batch={b}
@@ -3258,6 +3291,38 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
               onDeleteBatch={(batchId) => onResetOldOrders(orders.filter((o) => o.batchId === batchId).map((o) => o.id), [batchId])}
             />
           ))}
+          {releasedBatches.length > 0 && (
+            <div style={{ paddingTop: pendingReleaseBatches.length > 0 ? 12 : 0, marginTop: pendingReleaseBatches.length > 0 ? 6 : 0, borderTop: pendingReleaseBatches.length > 0 ? `1px solid ${LINE}` : 'none' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: MUTED, marginBottom: 8 }}>Already-released orders ({releasedBatches.length}) — pick a date to view</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <input
+                  type="date"
+                  value={releasedDateFilter}
+                  onChange={(e) => setReleasedDateFilter(e.target.value)}
+                  style={{ flex: 1, boxSizing: 'border-box', padding: '8px 6px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12, fontWeight: 700, color: INK, background: '#fff' }}
+                />
+                {releasedDateFilter && (
+                  <button onClick={() => setReleasedDateFilter('')} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 12, fontWeight: 700, padding: '8px 2px' }}>Clear</button>
+                )}
+              </div>
+              {!releasedDateFilter ? (
+                <div style={hint}>Select a purchase date above to view that day's released orders.</div>
+              ) : (
+                <>
+                  {releasedBatchesForDate.length === 0 && <div style={hint}>No released orders with purchase date {releasedDateFilter}.</div>}
+                  {releasedBatchesForDate.map((b) => (
+                    <ReleaseBatchCard
+                      key={b.id}
+                      batch={b}
+                      orders={orders}
+                      onToggleReleaseBatch={onToggleReleaseBatch}
+                      onDeleteBatch={(batchId) => onResetOldOrders(orders.filter((o) => o.batchId === batchId).map((o) => o.id), [batchId])}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+          )}
         </Card>
       )}
 
@@ -3463,7 +3528,7 @@ function OrdersListCard({ orders, indentBatches }) {
 // CUT is intentionally not listed: processed (CUT) items are never bought directly — only their raw ingredients are.
 const PURCHASE_CATEGORY_OPTIONS = ['ALL', 'FRUITS', 'VEGETABLES', 'FLOWER', 'EXOTIC', 'GRAINS'];
 
-function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onAddLedgerEntry, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds, onRestoreExcluded, orderPlacedMap, onSetOrderPlaced, onClearOrderPlaced }) {
+function PurchasesTab({ purchases, itemPrices, onSaveItemUnitPrice, orders, items, allItems, recipes, vendors, vendorLedger, stockCounts, onSavePlacedOrder, indentBatches, onDeleteOldPurchases, onResetPurchaseNeeds, onRestoreExcluded, orderPlacedMap, onSetOrderPlaced, onClearOrderPlaced }) {
   const [categoryFilter, setCategoryFilter] = usePersistedState('fnv_purchase_category', 'ALL');
   const [vendorFilterId, setVendorFilterId] = usePersistedState('fnv_purchase_vendor', '');
   const [qtySort, setQtySort] = usePersistedState('fnv_purchase_qtysort', 'none'); // 'none' | 'asc' | 'desc'
@@ -3474,7 +3539,6 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const [deleteBeforeDate, setDeleteBeforeDate] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState(null);
-  const [selectedVendorId, setSelectedVendorId] = useState('');
   const [view, setView] = useState('list'); // 'list' | 'purchased'
 
   // Plain "order already placed to someone" marker - independent of the
@@ -3495,65 +3559,13 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
   const toggleSelectItem = (id) => setSelectedItemIds((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
   const exitSelectMode = () => { setSelectMode(false); setSelectedItemIds([]); };
 
-  // Purchase form state
-  const [purchaseQty, setPurchaseQty] = useState('');
-  const [unitPrice, setUnitPrice] = useState('');
-  const [totalInput, setTotalInput] = useState('');
-  const [paymentMode, setPaymentMode] = useState('credit');
-  const [purchaseNote, setPurchaseNote] = useState('');
-  const [purchaseDate] = useState(() => todayLocalDate());
-  const [purchaseSuccess, setPurchaseSuccess] = useState(false);
-
-  const [showAllVendorItems, setShowAllVendorItems] = useState(false);
-  const [showAllVendorsInDropdown, setShowAllVendorsInDropdown] = useState(false);
-  const openItem = (id, keepVendor = false) => {
+  // Unit price form state (the amber page only edits the price of 1 unit)
+  const [unitPriceInput, setUnitPriceInput] = useState('');
+  const [unitPriceSaved, setUnitPriceSaved] = useState(false);
+  const openItem = (id) => {
     setSelectedItemId(id);
-    if (!keepVendor) setSelectedVendorId('');
-    setShowAllVendorItems(false);
-    setShowAllVendorsInDropdown(false);
-    setPurchaseQty('');
-    setUnitPrice('');
-    setTotalInput('');
-    setPaymentMode('cash');
-    setPurchaseNote('');
-    setPurchaseSuccess(false);
-  };
-
-  const derivedTotal = purchaseQty && unitPrice ? Math.round(Number(purchaseQty) * Number(unitPrice) * 100) / 100 : null;
-  const derivedUnitPrice = purchaseQty && totalInput && !unitPrice ? Math.round(Number(totalInput) / Number(purchaseQty) * 100) / 100 : null;
-  const totalPrice = derivedTotal ?? (totalInput ? Number(totalInput) : 0);
-  const finalUnitPrice = unitPrice ? Number(unitPrice) : (derivedUnitPrice ?? 0);
-
-  const handleQtyChange = (v) => { setPurchaseQty(v); };
-  const handleUnitPriceChange = (v) => { setUnitPrice(v); if (v && purchaseQty) setTotalInput(''); };
-  const handleTotalChange = (v) => { setTotalInput(v); if (v && purchaseQty) setUnitPrice(''); };
-
-  const canSubmit = purchaseQty && (unitPrice || (totalInput && purchaseQty)) && selectedVendorId;
-
-  const submitPurchase = () => {
-    if (!canSubmit) return;
-    const it = items.find((x) => x.id === selectedItemId);
-    const vendor = vendors.find((v) => v.id === selectedVendorId);
-    const unit = neededByProduct[it?.name]?.unit || it?.uom;
-    const entry = {
-      id: `LED-${Date.now().toString(36).toUpperCase().slice(-6)}`,
-      vendorId: selectedVendorId,
-      vendorName: vendor?.name || '',
-      itemId: selectedItemId,
-      itemName: it?.name || '',
-      qty: Number(purchaseQty),
-      unit,
-      unitPrice: finalUnitPrice,
-      total: totalPrice,
-      payment: paymentMode,
-      date: purchaseDate,
-      note: purchaseNote.trim(),
-      settled: paymentMode !== 'credit',
-    };
-    onAddLedgerEntry(entry);
-    setPurchaseQty(''); setUnitPrice(''); setTotalInput(''); setPurchaseNote(''); setPaymentMode('cash');
-    setPurchaseSuccess(true);
-    setTimeout(() => setPurchaseSuccess(false), 3000);
+    setUnitPriceInput('');
+    setUnitPriceSaved(false);
   };
 
   // Output items (Cut & Process finished products) never get purchased
@@ -3728,8 +3740,6 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
     const stock = stockByItem[it?.name] || 0;
     const buffer = Number(it?.buffer) || 0;
     const toBuy = Math.max(0, Math.round((needed + buffer - stock) * 100) / 100);
-    const mappedVendors = vendors.filter((v) => (v.itemIds || []).includes(it?.id));
-    const dropdownVendors = mappedVendors.length === 0 || showAllVendorsInDropdown ? vendors : mappedVendors;
     return (
       <div style={{ padding: 16 }}>
         <button onClick={() => setSelectedItemId(null)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: LEAF, fontWeight: 700, fontSize: 13, cursor: 'pointer', marginBottom: 12, padding: 0 }}>
@@ -3762,179 +3772,55 @@ function PurchasesTab({ purchases, orders, items, allItems, recipes, vendors, ve
               <div style={{ fontSize: 10, color: TOMATO, marginTop: 1 }}>{unit}</div>
             </div>
           </div>
-          <div style={{ marginTop: 16 }}>
-            <div style={smallLabel}>Select vendor</div>
-            <SmartSelect
-              value={selectedVendorId}
-              onChange={(e) => { setSelectedVendorId(e.target.value); setShowAllVendorItems(false); }}
-              style={{ width: '100%', boxSizing: 'border-box', padding: '9px 8px', borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13, color: INK, background: '#fff' }}
-            >
-              <option value="">Choose a vendor</option>
-              {dropdownVendors.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
-            </SmartSelect>
-            {mappedVendors.length === 0 ? (
-              <div style={{ fontSize: 11, color: AMBER, marginTop: 4 }}>No vendor is linked to {it?.name} yet — showing every vendor. Link one in Vendors to shorten this list next time.</div>
-            ) : !showAllVendorsInDropdown && (
-              <button onClick={() => setShowAllVendorsInDropdown(true)} style={{ background: 'none', border: 'none', color: LEAF, fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: 0, marginTop: 4 }}>
-                Not listed? Show all vendors
-              </button>
-            )}
-          </div>
+          {(() => {
+            const itemHistory = (itemPrices || []).filter((r) => r.itemId === it?.id).slice().sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+            const latest = buildLatestUnitPriceByItem([...purchases, ...itemPricesAsPurchases(itemPrices)]);
+            const cur = pickPriceInfo(latest, it?.id, it?.name);
+            const entered = Number(unitPriceInput);
+            const canSave = entered > 0;
+            const save = () => {
+              if (!canSave) return;
+              onSaveItemUnitPrice({ itemId: it.id, itemName: it.name, unit, unitPrice: Math.round(entered * 100) / 100 });
+              setUnitPriceInput('');
+              setUnitPriceSaved(true);
+              setTimeout(() => setUnitPriceSaved(false), 3000);
+            };
+            return (
+              <div style={{ marginTop: 16, borderTop: `1px solid ${LINE}`, paddingTop: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 2 }}>Unit price</div>
+                <div style={{ ...hint, marginBottom: 10 }}>1 {unit} ka price daalein. Save karte hi is item se mapped har article ka base price (aur cut items me recipe ke hisaab se) badal jaega. Packaging, labour, transportation, grading % aur margin wahi rahenge.</div>
 
-          {selectedVendorId ? (
-            (() => {
-              const vendor = vendors.find((v) => v.id === selectedVendorId);
-              const allVendorItems = vendor ? items.filter((x) => vendor.itemIds.includes(x.id)) : [];
-              // Sort by purchase frequency for this vendor (most purchases first), exclude current item
-              const purchaseCount = (itemName) => vendorLedger.filter((e) => e.vendorId === selectedVendorId && e.itemName === itemName).length;
-              const sorted = [...allVendorItems].sort((a, b) => {
-                if (a.id === it?.id) return -1;
-                if (b.id === it?.id) return 1;
-                return purchaseCount(b.name) - purchaseCount(a.name);
-              });
-              const SHOW_DEFAULT = 3;
-              const showMore = sorted.length > SHOW_DEFAULT;
-              const displayed = showAllVendorItems ? sorted : sorted.slice(0, SHOW_DEFAULT);
-              return (
-                <div style={{ marginTop: 14 }}>
-                  <div style={smallLabel}>{vendor?.name} also supplies</div>
-                  {allVendorItems.length === 0 && <div style={hint}>No items linked to this vendor yet — link some in the Vendors section.</div>}
-                  {displayed.map((vi) => {
-                    const viNeeded = neededByProduct[vi.name]?.needed;
-                    const viCount = purchaseCount(vi.name);
-                    return (
-                      <div key={vi.id} onClick={() => openItem(vi.id, true)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${LINE}`, padding: '8px 0', cursor: 'pointer' }}>
-                        <div>
-                          <div style={{ fontWeight: vi.id === it?.id ? 800 : 600, fontSize: 13, color: vi.id === it?.id ? LEAF : INK }}>{vi.name}{vi.id === it?.id ? ' (current)' : ''}</div>
-                          {viCount > 0 && <div style={{ fontSize: 10, color: MUTED }}>{viCount} purchase{viCount !== 1 ? 's' : ''}</div>}
-                        </div>
-                        <div style={{ fontSize: 11, color: viNeeded ? TOMATO : MUTED, fontWeight: 700, textAlign: 'right' }}>
-                          {viNeeded ? `${viNeeded} ${neededByProduct[vi.name].unit} needed` : 'No demand'}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {showMore && (
-                    <button
-                      onClick={() => setShowAllVendorItems((e) => !e)}
-                      style={{ background: 'none', border: 'none', color: LEAF, fontSize: 12, fontWeight: 700, padding: '6px 0', cursor: 'pointer', width: '100%', textAlign: 'center', borderTop: `1px solid ${LINE}` }}
-                    >
-                      {showAllVendorItems ? 'Show less ▲' : `Show ${sorted.length - SHOW_DEFAULT} more ▼`}
-                    </button>
-                  )}
-                </div>
-              );
-            })()
-          ) : null}
-
-          {selectedVendorId && (
-            <div style={{ marginTop: 16, borderTop: `1px solid ${LINE}`, paddingTop: 14 }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Record purchase</div>
-
-              {purchaseSuccess && (
-                <div style={{ background: '#EAF3DE', color: LEAF_DARK, borderRadius: 8, padding: '9px 12px', fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
-                  ✓ Purchase recorded successfully
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={smallLabel}>QTY ({neededByProduct[it?.name]?.unit || it?.uom})</div>
-                  <Field placeholder="e.g. 50" type="number" value={purchaseQty} onChange={(e) => handleQtyChange(e.target.value)} style={{ marginBottom: 0 }} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ ...smallLabel, display: 'flex', justifyContent: 'space-between' }}>
-                    <span>UNIT PRICE (₹)</span>
-                    {derivedUnitPrice !== null && !unitPrice && <span style={{ color: LEAF, fontSize: 10 }}>auto</span>}
+                {unitPriceSaved && (
+                  <div style={{ background: '#EAF3DE', color: LEAF_DARK, borderRadius: 8, padding: '9px 12px', fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
+                    ✓ Unit price updated
                   </div>
-                  <Field
-                    placeholder={derivedUnitPrice !== null && !unitPrice ? String(derivedUnitPrice) : 'e.g. 30'}
-                    type="number"
-                    value={unitPrice}
-                    onChange={(e) => handleUnitPriceChange(e.target.value)}
-                    style={{ marginBottom: 0, borderColor: derivedUnitPrice !== null && !unitPrice ? LEAF : LINE }}
-                  />
-                </div>
-              </div>
+                )}
 
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ ...smallLabel, display: 'flex', justifyContent: 'space-between' }}>
-                  <span>TOTAL AMOUNT (₹)</span>
-                  {derivedTotal !== null && !totalInput && <span style={{ color: LEAF, fontSize: 10 }}>auto</span>}
+                <div style={{ background: BG, borderRadius: 8, padding: '8px 12px', marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: MUTED }}>Current price{cur ? ` (${cur.src === 'unitprice' ? 'unit price' : 'last purchase'})` : ''}</span>
+                  <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>{cur ? `₹${Math.round(cur.unitPrice * 100) / 100} / ${unit}` : 'Not set'}</span>
                 </div>
-                <Field
-                  placeholder={derivedTotal !== null ? String(derivedTotal) : 'Enter total or fill unit price'}
-                  type="number"
-                  value={totalInput}
-                  onChange={(e) => handleTotalChange(e.target.value)}
-                  style={{ marginBottom: 0, fontWeight: 700, fontSize: 15, borderColor: derivedTotal !== null && !totalInput ? LEAF : LINE }}
-                />
-                {totalPrice > 0 && (
-                  <div style={{ background: BG, borderRadius: 8, padding: '8px 12px', marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 12, color: MUTED }}>Confirmed total</span>
-                    <span style={{ fontWeight: 800, fontSize: 15, color: INK }}>₹{totalPrice.toLocaleString('en-IN')}</span>
+
+                <div style={smallLabel}>PRICE OF 1 {String(unit || 'unit').toUpperCase()} (₹)</div>
+                <Field placeholder="e.g. 12.50" type="number" value={unitPriceInput} onChange={(e) => setUnitPriceInput(e.target.value)} style={{ fontWeight: 700, fontSize: 16 }} />
+                <PrimaryBtn onClick={save} disabled={!canSave}>Update unit price</PrimaryBtn>
+
+                <UnitPriceCalculator onUse={(v) => setUnitPriceInput(String(v))} />
+
+                {itemHistory.length > 0 && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={smallLabel}>RECENT UNIT PRICES</div>
+                    {itemHistory.slice(0, 5).map((r) => (
+                      <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${LINE}`, padding: '6px 0', fontSize: 12 }}>
+                        <span style={{ color: MUTED }}>{String(r.at || r.date || '').replace('T', ' ').slice(0, 16)}{r.by ? ` · ${r.by}` : ''}</span>
+                        <span style={{ fontWeight: 700 }}>₹{r.unitPrice} / {r.unit || unit}</span>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
-
-              <div style={smallLabel}>PAYMENT MODE</div>
-              <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-                {[{ key: 'cash', label: '💵 Cash' }, { key: 'upi', label: '📱 UPI' }, { key: 'bank', label: '🏦 Bank' }, { key: 'credit', label: '📒 Credit' }].map((m) => (
-                  <button
-                    key={m.key}
-                    onClick={() => setPaymentMode(m.key)}
-                    style={{ flex: 1, padding: '7px 4px', borderRadius: 8, border: `1px solid ${paymentMode === m.key ? (m.key === 'credit' ? AMBER : LEAF) : LINE}`, background: paymentMode === m.key ? (m.key === 'credit' ? '#FBEFDC' : '#EAF3DE') : '#fff', color: paymentMode === m.key ? (m.key === 'credit' ? AMBER : LEAF_DARK) : INK, fontSize: 10, fontWeight: 700, cursor: 'pointer', textAlign: 'center' }}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-
-              {paymentMode === 'credit' && (
-                <div style={{ background: '#FBEFDC', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: AMBER, marginBottom: 4 }}>📒 Credit entry</div>
-                  <div style={{ fontSize: 11, color: AMBER }}>₹{totalPrice.toLocaleString('en-IN')} will be added to {vendors.find((v) => v.id === selectedVendorId)?.name || 'vendor'}'s account as outstanding credit.</div>
-                </div>
-              )}
-
-              <Field placeholder="Note (optional)" value={purchaseNote} onChange={(e) => setPurchaseNote(e.target.value)} />
-
-              <PrimaryBtn
-                onClick={submitPurchase}
-                disabled={!canSubmit}
-                color={paymentMode === 'credit' ? AMBER : LEAF}
-              >
-                {paymentMode === 'credit' ? 'Record on credit' : 'Record purchase'}
-              </PrimaryBtn>
-            </div>
-          )}
-
-          {/* Vendor credit ledger for this item's vendor */}
-          {selectedVendorId && (() => {
-            const creditEntries = vendorLedger.filter((e) => e.vendorId === selectedVendorId && e.payment === 'credit' && !e.settled);
-            const creditTotal = creditEntries.reduce((s, e) => s + e.total, 0);
-            if (creditEntries.length === 0) return null;
-            return (
-              <div style={{ marginTop: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: AMBER }}>Outstanding credit</div>
-                  <div style={{ fontWeight: 800, color: AMBER }}>₹{creditTotal.toLocaleString('en-IN')}</div>
-                </div>
-                {creditEntries.slice(0, 5).map((e) => (
-                  <div key={e.id} style={{ borderTop: `1px solid ${LINE}`, padding: '6px 0', fontSize: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ fontWeight: 600 }}>{e.itemName} · {e.qty} {e.unit}</span>
-                      <span style={{ color: AMBER, fontWeight: 700 }}>₹{e.total.toLocaleString('en-IN')}</span>
-                    </div>
-                    <div style={{ color: MUTED, fontSize: 11 }}>{e.date}{e.note ? ` · ${e.note}` : ''}</div>
-                  </div>
-                ))}
-              </div>
             );
           })()}
-
         </Card>
       </div>
     );
@@ -4374,27 +4260,164 @@ function computeFinalPrice(basePrice, config) {
   return Math.round((graded * (1 + vendorMarginPercent / 100) + packaging + labour + transportation) * 100) / 100;
 }
 
-function buildLatestUnitPriceByItem(purchases) {
+// ── Unit price (entered on the Purchase page) + as-of pricing + P&L freeze ──
+// localStamp: local wall-clock 'YYYY-MM-DDTHH:mm:ss' (sorts correctly as a string and
+// compares against purchase dates, which are local 'YYYY-MM-DD').
+function localStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+// A batch's cost is frozen at this time on its supply (fulfilment) date.
+const PL_FREEZE_TIME = '17:00:00';
+
+// Unit price records behave like a 1-unit purchase for pricing purposes only.
+// They are merged into the list handed to the pricing functions and never touch
+// the real purchases / vendor ledger.
+function itemPricesAsPurchases(itemPrices) {
+  return (itemPrices || [])
+    .filter((r) => Number(r.unitPrice) > 0)
+    .map((r) => ({ type: 'unitprice', itemId: r.itemId || null, item: r.itemName || '', qty: 1, cost: Number(r.unitPrice), date: r.date || String(r.at || '').slice(0, 10), at: r.at || '', city: r.city }));
+}
+
+function pickPriceInfo(latest, itemId, name) {
+  const a = itemId ? latest.byId[itemId] : null;
+  const b = name ? latest.byName[String(name).trim().toLowerCase()] : null;
+  return !a ? b : (!b ? a : (a.date >= b.date ? a : b));
+}
+
+// asOf ({ date, stamp }) ignores anything entered after that moment — used to rebuild the
+// prices that were in force at the P&L freeze time of a given supply day.
+function buildLatestUnitPriceByItem(purchases, asOf) {
   // Two maps, not one — an order created before itemId was tracked only has a
   // name to look up by, so a *newer* purchase (which does carry itemId) must
-  // still be reachable through its name. Every purchase that has a name is
-  // recorded in byName regardless of whether it also has an itemId, so the
-  // two maps independently reflect the true latest purchase either way could
-  // find; buildPricingArticles then takes whichever of the two is newer.
+  // still be reachable through its name. The name key is normalized (trimmed,
+  // lowercased). The newest entry wins; on the same day a unit price entered on the
+  // Purchase page (it carries a time) beats a time-less vendor purchase.
   const byId = {};
   const byName = {};
   purchases
     .filter((p) => p.type !== 'requirement' && p.qty > 0)
     .forEach((p) => {
-      const entry = { date: p.date || '', unitPrice: p.cost / p.qty };
+      if (p.type === 'unitprice' && !(p.cost > 0)) return;
+      if (asOf) {
+        if (p.at) { if (p.at > asOf.stamp) return; } else if ((p.date || '') > asOf.date) return;
+      }
+      const entry = { date: p.at || p.date || '', unitPrice: p.cost / p.qty, src: p.type === 'unitprice' ? 'unitprice' : 'purchase' };
       if (p.itemId) {
         if (!byId[p.itemId] || entry.date >= byId[p.itemId].date) byId[p.itemId] = entry;
       }
-      if (p.item) {
-        if (!byName[p.item] || entry.date >= byName[p.item].date) byName[p.item] = entry;
+      const nameKey = p.item ? p.item.trim().toLowerCase() : '';
+      if (nameKey) {
+        if (!byName[nameKey] || entry.date >= byName[nameKey].date) byName[nameKey] = entry;
       }
     });
   return { byId, byName };
+}
+
+// Resolves an item by its channel alias's EAN/code — used when an order's own
+// itemId is missing (an older order predating that field).
+function resolveItemIdByChannelCode(items, channel, ean, code) {
+  const target = (ean || code || '').toString().trim().toLowerCase();
+  if (!target) return null;
+  for (const it of items) {
+    const hit = (it.aliases || []).some((a) => a.channel === channel
+      && ((a.ean && String(a.ean).toLowerCase() === target) || (a.code && String(a.code).toLowerCase() === target)));
+    if (hit) return it.id;
+  }
+  return null;
+}
+
+// A Cut & Process item (e.g. "Cauliflower Florets") is never bought from a vendor — only its
+// raw ingredients are — so its cost comes from its recipe: each ingredient's latest unit price
+// (a nested CUT ingredient is costed from its own recipe) times the quantity the recipe uses
+// per one output unit. Returns null (never a partial total) when there is no recipe or any
+// ingredient has no price yet. Recipes are shared across cities while items are per-city, so
+// the recipe is found by output item id first, then by name.
+function computeRecipeUnitCost(item, recipes, items, latest, allItems, depth) {
+  const d = depth || 0;
+  if (!item || d > 4) return null;
+  const nk = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, '');
+  const loose = (s) => nk(String(s || '').replace(/\([^)]*\)/g, ''));
+  const byId = {};
+  (allItems || []).forEach((it) => { byId[it.id] = it; });
+  (items || []).forEach((it) => { byId[it.id] = it; });
+  const isCut = item.category === 'CUT';
+  let cands = (recipes || []).filter((r) => r.outputItemId === item.id);
+  if (cands.length === 0) {
+    cands = (recipes || []).filter((r) => {
+      const out = byId[r.outputItemId];
+      const names = [out && out.name, r.name];
+      return names.some((n) => nk(n) && nk(n) === nk(item.name)) || (isCut && names.some((n) => loose(n) && loose(n) === loose(item.name)));
+    });
+  }
+  // a recipe that lists the item itself as an ingredient can never cost it
+  cands = cands.filter((r) => (r.ingredients || []).length > 0 && !(r.ingredients || []).some((ing) => byId[ing.itemId] && nk(byId[ing.itemId].name) === nk(item.name)));
+  const recipe = cands[0];
+  if (!recipe) return null;
+  let total = 0;
+  for (const ing of recipe.ingredients) {
+    const ingItem = byId[ing.itemId];
+    if (!ingItem) return null;
+    const info = pickPriceInfo(latest, ingItem.id, ingItem.name);
+    let unitPrice = info ? info.unitPrice : null;
+    if (unitPrice == null) unitPrice = computeRecipeUnitCost(ingItem, recipes, items, latest, allItems, d + 1);
+    if (unitPrice == null) return null; // this ingredient has no price yet - can't give a complete cost
+    const normalized = normalizeIngredientQty(ing.qtyPerUnit, ing.unit);
+    total += normalized.value * unitPrice;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+// ── P&L cost freeze ──
+const batchSupplyDate = (b, orders) => (orders.find((o) => o.batchId === b.id && o.fulfilmentDate) || {}).fulfilmentDate || '';
+
+// Rebuilds one batch's per-order final price per pack using only prices that were entered by
+// the freeze time of its supply date (the packaging/labour/etc. config is the saved one).
+function computeBatchFreeze(b, ctx) {
+  const date = batchSupplyDate(b, ctx.orders);
+  const bCity = b.city || CITIES[0];
+  const inCity = (x) => (x.city || CITIES[0]) === bCity;
+  const cOrders = ctx.orders.filter(inCity);
+  const cItems = ctx.items.filter(inCity);
+  const cPurch = [...ctx.purchases.filter(inCity), ...itemPricesAsPurchases(ctx.itemPrices.filter(inCity))];
+  const configByKey = {};
+  ctx.pricingConfig.forEach((c) => { configByKey[c.id] = c; });
+  const asOf = { date, stamp: `${date}T${PL_FREEZE_TIME}` };
+  const arts = buildPricingArticles(cOrders, cItems, cPurch, bCity, configByKey, ctx.recipes, ctx.items, asOf);
+  const byKey = {};
+  arts.forEach((a) => { byKey[a.key] = a; });
+  arts.forEach((a) => (a.altKeys || []).forEach((k) => { if (!byKey[k]) byKey[k] = a; }));
+  const costs = computeBatchArticleCosts(b, cOrders, byKey, configByKey);
+  const prices = {};
+  costs.rows.forEach((r) => { prices[r.orderId] = r.finalPricePerPack == null ? null : r.finalPricePerPack; });
+  return { snap: { id: b.id, batchId: b.id, city: bCity, supplyDate: date, cutoff: asOf.stamp, takenAt: localStamp(), prices }, pricedCount: costs.pricedCount };
+}
+
+// Writes each batch's frozen cost once its freeze time has passed (checked every minute while
+// the app is open), but only after every collection has loaded so a half-loaded app can never
+// freeze wrong numbers.
+function useBatchCostFreeze(ready, ctx, plSnapshots, writeSnapshot) {
+  const doneRef = useRef(new Set());
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 60000);
+    return () => clearInterval(t);
+  }, []);
+  const { indentBatches, orders, items, purchases, itemPrices, pricingConfig, recipes } = ctx;
+  useEffect(() => {
+    if (!ready) return;
+    const now = localStamp();
+    const have = new Set(plSnapshots.map((s) => s.id));
+    indentBatches.filter((b) => !b.isAdvance).forEach((b) => {
+      if (have.has(b.id) || doneRef.current.has(b.id)) return;
+      const date = batchSupplyDate(b, orders);
+      if (!date || now < `${date}T${PL_FREEZE_TIME}`) return;
+      doneRef.current.add(b.id);
+      const { snap, pricedCount } = computeBatchFreeze(b, { orders, items, purchases, itemPrices, pricingConfig, recipes });
+      if (pricedCount > 0) writeSnapshot(snap);
+    });
+  }, [ready, tick, indentBatches, orders, items, purchases, itemPrices, pricingConfig, recipes, plSnapshots]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 
@@ -4766,8 +4789,8 @@ function buildArticleKeyer(pricedOrders, city) {
   return { keyFor, ownKeyFor, stampOf };
 }
 
-function buildPricingArticles(orders, items, purchases, city, configByKey) {
-  const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases);
+function buildPricingArticles(orders, items, purchases, city, configByKey, recipes, allItems, asOf) {
+  const latestUnitPriceByItem = buildLatestUnitPriceByItem(purchases, asOf);
   const map = {};
   const pricedOrders = orders.filter((o) => o.packSize && o.packUnit);
   const { keyFor, ownKeyFor, stampOf } = buildArticleKeyer(pricedOrders, city);
@@ -4791,10 +4814,17 @@ function buildPricingArticles(orders, items, purchases, city, configByKey) {
       const legacyKey = altWithConfig || plainLegacyKey;
       if (map[key]) return;
       const item = items.find((it) => it.name === o.product);
-      const byIdInfo = o.itemId ? latestUnitPriceByItem.byId[o.itemId] : null;
-      const byNameInfo = latestUnitPriceByItem.byName[o.product];
-      const unitPriceInfo = !byIdInfo ? byNameInfo : (!byNameInfo ? byIdInfo : (byIdInfo.date >= byNameInfo.date ? byIdInfo : byNameInfo));
-      const autoBasePrice = unitPriceInfo ? Math.round(unitPriceInfo.unitPrice * o.packSize * 100) / 100 : null;
+      const resolvedItemId = o.itemId || resolveItemIdByChannelCode(items, o.platform, o.rawEan, o.rawCode);
+      const unitPriceInfo = pickPriceInfo(latestUnitPriceByItem, resolvedItemId, o.product);
+      // A Cut & Process item is never bought directly: its price always comes from its recipe's
+      // ingredient prices when that can be worked out completely (otherwise any purchase price
+      // is used, and with none the price stays empty).
+      const isCutItem = item?.category === 'CUT';
+      const recipeUnitCost = (isCutItem || !unitPriceInfo) ? computeRecipeUnitCost(item, recipes || [], items, latestUnitPriceByItem, allItems) : null;
+      const autoBasePrice = recipeUnitCost != null
+        ? Math.round(recipeUnitCost * o.packSize * 100) / 100
+        : (unitPriceInfo ? Math.round(unitPriceInfo.unitPrice * o.packSize * 100) / 100 : null);
+      const autoBasePriceSource = recipeUnitCost != null ? 'recipe' : (unitPriceInfo ? unitPriceInfo.src : null);
       // A base price fetched from the latest purchase is the default — but a specific
       // article's config can carry a manual override (e.g. before any purchase exists yet,
       // or to correct a one-off odd purchase price) which always wins when set.
@@ -4819,13 +4849,14 @@ function buildPricingArticles(orders, items, purchases, city, configByKey) {
         rawUnit: o.rawUnit || '',
         basePrice,
         autoBasePrice,
+        autoBasePriceSource,
         hasBasePriceOverride: hasOverride,
       };
     });
   return Object.values(map).sort((a, b) => a.articleName.localeCompare(b.articleName));
 }
 
-function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
+function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey, snapshot) {
   const batchOrders = orders.filter((o) => o.batchId === batch.id && !o.isAdvance);
   const batchCity = batch.city || CITIES[0];
   // Must reproduce the exact same keys buildPricingArticles assigned these same orders
@@ -4839,7 +4870,10 @@ function computeBatchArticleCosts(batch, orders, articlesByKey, configByKey) {
     const packSize = Number(o.packSize) || 1;
     const shortPacks = Math.min(Number(o.packQty) || 0, (Number(o.shortQty) || 0) / packSize);
     const effectivePacks = Math.max(0, Math.round(((Number(o.packQty) || 0) - shortPacks) * 100) / 100);
-    const finalPricePerPack = article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[article.legacyKey] || configByKey[legacyKey]) : null;
+    // Once a batch's cost is frozen (snapshot taken at its freeze time) the frozen per-pack price is used,
+    // so later price edits never move that batch's P&L. An order that had no price at freeze time stays live.
+    const frozenPrice = snapshot && snapshot.prices && snapshot.prices[o.id] != null ? Number(snapshot.prices[o.id]) : null;
+    const finalPricePerPack = frozenPrice != null ? frozenPrice : (article ? computeFinalPrice(article.basePrice, configByKey[key] || configByKey[article.legacyKey] || configByKey[legacyKey]) : null);
     const cost = finalPricePerPack == null ? null : Math.round(finalPricePerPack * effectivePacks * 100) / 100;
     return {
       orderId: o.id,
@@ -5079,15 +5113,15 @@ function parseBlinkitGrnTableWords(pages) {
 
 // ── Sales (mobile) — same verified logic as the admin panel, laid out in a
 // single narrow column instead of the admin's wide multi-panel grid ──
-function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
+function SalesTabMobile({ items, allItems, recipes, plSnapshots, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
   const [view, setView] = useState('overview');
   const [openBatchId, setOpenBatchId] = useState(null);
   const configByKey = useMemo(() => { const m = {}; pricingConfig.forEach((x) => { m[x.id] = x; }); return m; }, [pricingConfig]);
-  const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city, configByKey), [orders, items, purchases, city, configByKey]);
+  const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city, configByKey, recipes, allItems), [orders, items, purchases, city, configByKey, recipes, allItems]);
   const articlesByKey = useMemo(() => { const m = {}; articles.forEach((a) => { m[a.key] = a; }); articles.forEach((a) => (a.altKeys || []).forEach((k) => { if (!m[k]) m[k] = a; })); return m; }, [articles]);
 
   const batchFinancials = useMemo(() => indentBatches.filter((b) => !b.isAdvance).map((b) => {
-    const costs = computeBatchArticleCosts(b, orders, articlesByKey, configByKey);
+    const costs = computeBatchArticleCosts(b, orders, articlesByKey, configByKey, (plSnapshots || {})[b.id]);
     const grn = grnValueForBatch(b.id, grnReports, items, articlesByKey, configByKey, city, b.platform);
     const fulfilmentDate = orders.find((o) => o.batchId === b.id && o.fulfilmentDate)?.fulfilmentDate || '';
     // A batch can have more than one PO — the channel sometimes tops up an
@@ -5117,7 +5151,7 @@ function SalesTabMobile({ items, orders, purchases, pricingConfig, grnReports, i
       netProfit: grn.value > 0 ? Math.round((grn.value - costs.totalCost) * 100) / 100 : null,
       invoice: salesInvoices.find((inv) => (inv.batchIds || []).includes(b.id)),
     };
-  }), [indentBatches, orders, articlesByKey, configByKey, city, grnReports, salesInvoices, items]);
+  }), [indentBatches, orders, articlesByKey, configByKey, city, grnReports, salesInvoices, items, plSnapshots]);
 
   const openBatch = openBatchId ? batchFinancials.find((bf) => bf.batch.id === openBatchId) : null;
   if (openBatch) {
@@ -5972,8 +6006,9 @@ function PricingCard({ article, config, onUpdate }) {
       <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>{article.code || 'No code'} · {article.rawUnit || `${article.packSize}${article.packUnit}/pack`}</div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
         <span style={{ fontSize: 11, color: MUTED, fontWeight: 700 }}>BASE PRICE</span>
-        <span style={{ fontWeight: 700, color: basePrice == null ? MUTED : LEAF }}>{basePrice == null ? 'No purchase yet' : `₹${basePrice.toFixed(2)}`}</span>
+        <span style={{ fontWeight: 700, color: basePrice == null ? MUTED : LEAF }}>{basePrice == null ? 'No price yet' : `₹${basePrice.toFixed(2)}`}</span>
       </div>
+      <div style={{ fontSize: 10, color: article.hasBasePriceOverride ? AMBER : MUTED, textAlign: 'right' }}>{article.hasBasePriceOverride ? 'Manually set (admin)' : (article.autoBasePriceSource === 'recipe' ? 'From recipe (ingredient cost)' : (article.autoBasePriceSource === 'unitprice' ? 'From unit price' : (article.autoBasePriceSource === 'purchase' ? 'From latest purchase' : '')))}</div>
       {row('Grading %', grading, setGrading, 'gradingPercent')}
       {row('Vendor margin %', vendorMargin, setVendorMargin, 'vendorMarginPercent')}
       {row('Packaging (₹)', packaging, setPackaging, 'packaging')}
@@ -5987,13 +6022,13 @@ function PricingCard({ article, config, onUpdate }) {
   );
 }
 
-function PricingTab({ orders, items, purchases, pricingConfig, city, onUpdate }) {
+function PricingTab({ orders, items, allItems, recipes, purchases, pricingConfig, city, onUpdate }) {
   const [search, setSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
 
-  const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city), [orders, items, purchases, city]);
   const configByKey = useMemo(() => { const map = {}; pricingConfig.forEach((c) => { map[c.id] = c; }); return map; }, [pricingConfig]);
+  const articles = useMemo(() => buildPricingArticles(orders, items, purchases, city, configByKey, recipes, allItems), [orders, items, purchases, city, configByKey, recipes, allItems]);
   const categoriesPresent = useMemo(() => ['ALL', ...Array.from(new Set(articles.map((a) => a.category).filter(Boolean)))], [articles]);
 
   const filteredArticles = articles
@@ -6013,7 +6048,7 @@ function PricingTab({ orders, items, purchases, pricingConfig, city, onUpdate })
     <div style={{ padding: 16 }}>
       <Card style={{ marginBottom: 12 }}>
         <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 6 }}><IndianRupee size={15} /> Pricing</div>
-        <div style={hint}>Base price is fetched from the latest purchase price × pack size. Grading % and vendor margin % apply on the base price; packaging, labour and transportation are flat amounts.</div>
+        <div style={hint}>Base price = latest unit price (Purchase page) or purchase price × pack size; cut items are costed from their recipe ingredients. Grading % and vendor margin % apply on the base price; packaging, labour and transportation are flat amounts.</div>
         <Field placeholder="Search article..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ marginBottom: 8 }} />
         <div style={smallLabel}>CHANNEL</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', marginBottom: 4 }}>
@@ -7233,6 +7268,62 @@ function SmartSelect({ value, onChange, children, style, disabled, title, ...res
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Small calculator shown under the unit price field (e.g. 450 ÷ 36 for a crate of 36 pieces).
+// "Use result" copies the answer into the price field.
+// ---------------------------------------------------------------------------
+function calcEvaluate(expr) {
+  const toks = String(expr).match(/\d*\.?\d+|\d+\.|[+\-×÷]/g);
+  if (!toks) return null;
+  if (toks[0] === '-') { toks.shift(); if (toks.length === 0) return null; toks[0] = '-' + toks[0]; }
+  const nums = []; const ops = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (i % 2 === 0) { const n = Number(t); if (!Number.isFinite(n)) return null; nums.push(n); }
+    else { if (!/^[+\-×÷]$/.test(t)) return null; ops.push(t); }
+  }
+  if (nums.length !== ops.length + 1) { if (nums.length === ops.length + 0 && ops.length > 0) { ops.pop(); } else return null; }
+  // × and ÷ first, then + and -
+  const n2 = [nums[0]]; const o2 = [];
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i] === '×') n2[n2.length - 1] *= nums[i + 1];
+    else if (ops[i] === '÷') { if (nums[i + 1] === 0) return null; n2[n2.length - 1] /= nums[i + 1]; }
+    else { o2.push(ops[i]); n2.push(nums[i + 1]); }
+  }
+  let r = n2[0];
+  o2.forEach((op, i) => { r = op === '+' ? r + n2[i + 1] : r - n2[i + 1]; });
+  return Math.round(r * 100) / 100;
+}
+
+function UnitPriceCalculator({ onUse }) {
+  const [expr, setExpr] = useState('');
+  const result = calcEvaluate(expr);
+  const press = (k) => {
+    if (k === 'C') return setExpr('');
+    if (k === '⌫') return setExpr((e) => e.slice(0, -1));
+    if (k === '=') { if (result != null) setExpr(String(result)); return; }
+    if (/[+\-×÷]/.test(k)) { setExpr((e) => (e === '' && k !== '-' ? e : (/[+\-×÷]$/.test(e) ? e.slice(0, -1) + k : e + k))); return; }
+    setExpr((e) => e + k);
+  };
+  const keys = ['7', '8', '9', '÷', '4', '5', '6', '×', '1', '2', '3', '-', '0', '.', '⌫', '+'];
+  return (
+    <div style={{ marginTop: 14, border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, background: '#fff' }}>
+      <div style={{ ...smallLabel, marginBottom: 6 }}>CALCULATOR</div>
+      <div style={{ background: BG, borderRadius: 8, padding: '8px 12px', minHeight: 44, textAlign: 'right' }}>
+        <div style={{ fontSize: 12, color: MUTED, minHeight: 16, wordBreak: 'break-all' }}>{expr || '0'}</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: INK }}>{result != null ? `= ${result}` : '='}</div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 8 }}>
+        {keys.map((k) => (
+          <button key={k} onClick={() => press(k)} style={{ padding: '11px 0', borderRadius: 8, border: `1px solid ${LINE}`, background: /[+\-×÷]/.test(k) ? '#EAF3DE' : '#fff', color: INK, fontSize: 16, fontWeight: 700, cursor: 'pointer' }}>{k}</button>
+        ))}
+        <button onClick={() => press('C')} style={{ gridColumn: 'span 2', padding: '11px 0', borderRadius: 8, border: `1px solid ${LINE}`, background: '#FBEAE3', color: TOMATO, fontSize: 14, fontWeight: 800, cursor: 'pointer' }}>Clear</button>
+        <button onClick={() => result != null && onUse(result)} disabled={result == null || result <= 0} style={{ gridColumn: 'span 2', padding: '11px 0', borderRadius: 8, border: 'none', background: result != null && result > 0 ? LEAF : LINE, color: '#fff', fontSize: 14, fontWeight: 800, cursor: result != null && result > 0 ? 'pointer' : 'default' }}>Use result</button>
+      </div>
     </div>
   );
 }
