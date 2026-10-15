@@ -3548,6 +3548,7 @@ function PurchasesTab({ purchases, itemPrices, onSaveItemUnitPrice, orders, item
   // needing purchase" clears these too, since that's the same "start this list
   // over" action.
   const orderPlacedIds = Object.keys(orderPlacedMap || {});
+  const pricedTodayIds = new Set((itemPrices || []).filter((r) => (r.date || String(r.at || '').slice(0, 10)) === todayLocalDate()).map((r) => r.itemId));
   const toggleOrderPlaced = (id) => onSetOrderPlaced(id, !(orderPlacedMap || {})[id]);
 
   // Multi-select / order sharing
@@ -4000,6 +4001,7 @@ function PurchasesTab({ purchases, itemPrices, onSaveItemUnitPrice, orders, item
         {[...filteredItems.filter((it) => !orderPlacedIds.includes(it.id)), ...filteredItems.filter((it) => orderPlacedIds.includes(it.id))].map((it) => { // ticked (order placed) items sink to the bottom, un-ticked stay on top
           const isSelected = selectMode && selectedItemIds.includes(it.id);
           const isPlaced = orderPlacedIds.includes(it.id);
+          const priceDoneToday = pricedTodayIds.has(it.id); // unit price already updated today -> TO BUY box turns green
           return (
             <div
               key={it.id}
@@ -4028,10 +4030,10 @@ function PurchasesTab({ purchases, itemPrices, onSaveItemUnitPrice, orders, item
                   <div style={{ fontSize: 11, fontWeight: 700, color: INK }}>{it.stock}</div>
                   <div style={{ fontSize: 8, color: MUTED }}>{it.unit}</div>
                 </div>
-                <div style={{ border: `1px solid ${TOMATO}`, background: '#FBEAE3', borderRadius: 6, padding: '4px 6px', textAlign: 'center', minWidth: 52 }}>
-                  <div style={{ fontSize: 8, color: TOMATO, fontWeight: 700 }}>TO BUY</div>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: TOMATO }}>{it.toBuy}</div>
-                  <div style={{ fontSize: 8, color: TOMATO }}>{it.unit}</div>
+                <div style={{ border: `1px solid ${priceDoneToday ? LEAF : TOMATO}`, background: priceDoneToday ? '#EAF3DE' : '#FBEAE3', borderRadius: 6, padding: '4px 6px', textAlign: 'center', minWidth: 52 }}>
+                  <div style={{ fontSize: 8, color: priceDoneToday ? LEAF_DARK : TOMATO, fontWeight: 700 }}>TO BUY</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: priceDoneToday ? LEAF_DARK : TOMATO }}>{it.toBuy}</div>
+                  <div style={{ fontSize: 8, color: priceDoneToday ? LEAF_DARK : TOMATO }}>{it.unit}</div>
                 </div>
                 {!selectMode && <ChevronRight size={14} color={MUTED} />}
               </div>
