@@ -786,11 +786,18 @@ export default function FnvMobilePreview() {
     ids.forEach((id) => b.update(doc(db, 'orders', id), { excludeFromPurchase: false }));
     b.commit();
   };
-  const resetOldOrders = (orderIds, batchIds) => {
-    const b = writeBatch(db);
-    orderIds.forEach((id) => b.delete(doc(db, 'orders', id)));
-    batchIds.forEach((id) => b.delete(doc(db, 'indentBatches', id)));
-    b.commit();
+  // Firestore caps one write batch at 500 operations, so large deletes (e.g.
+  // "Delete all" across thousands of orders) are committed in chunks.
+  const resetOldOrders = async (orderIds, batchIds) => {
+    const refs = [
+      ...orderIds.map((id) => doc(db, 'orders', id)),
+      ...batchIds.map((id) => doc(db, 'indentBatches', id)),
+    ];
+    for (let i = 0; i < refs.length; i += 450) {
+      const b = writeBatch(db);
+      refs.slice(i, i + 450).forEach((r) => b.delete(r));
+      await b.commit();
+    }
   };
   const addPurchase = (p) => fbSetDoc('purchases', p.id, { date: todayLocalDate(), type: 'purchased', ...p, city: effectiveCity });
   const addPurchaseRequirements = (rows, dateOverride) => { const b = writeBatch(db); const today = dateOverride || todayLocalDate(); rows.forEach((r) => b.set(doc(db,'purchases',r.id), { date: today, type: 'requirement', ...r, city: effectiveCity })); b.commit(); };
@@ -3421,12 +3428,12 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
         <PrimaryBtn onClick={submit} disabled={!product.trim() || !qty || Number(qty) <= 0 || !fulfilmentDate}>Add order</PrimaryBtn>
       </Card>
 
-      <OrdersListCard orders={orders} indentBatches={indentBatches} />
+      <OrdersListCard orders={orders} indentBatches={indentBatches} onDeleteOrders={onResetOldOrders} />
     </div>
   );
 }
 
-function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders: groupOrders, defaultOpen }) {
+function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders: groupOrders, defaultOpen, selectable, selected, onToggleSelect }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const [openArticleKey, setOpenArticleKey] = useState(null);
 
@@ -3449,6 +3456,15 @@ function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders:
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, marginBottom: 10, overflow: 'hidden' }}>
       <div onClick={() => setOpen((x) => !x)} style={{ padding: '10px 12px', cursor: 'pointer', background: open ? '#F6F3EA' : '#fff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+          {selectable && (
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onClick={(e) => e.stopPropagation()}
+              onChange={onToggleSelect}
+              style={{ width: 20, height: 20, accentColor: TOMATO, flexShrink: 0, marginTop: 1 }}
+            />
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>{label}</div>
             {subtitle && <div style={{ fontSize: 10.5, color: MUTED, marginTop: 1 }}>{subtitle}</div>}
@@ -3494,7 +3510,19 @@ function OrderBatchGroupMobile({ label, subtitle, badgeText, badgeColor, orders:
   );
 }
 
-function OrdersListCard({ orders, indentBatches }) {
+// Previous calendar month as a "YYYY-MM" prefix (e.g. on 26 Nov 2026 → "2026-10"),
+// plus a readable name for the confirmation text.
+function previousMonthInfo() {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prefix = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const name = d.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  return { prefix, name };
+}
+
+const MANUAL_GROUP_KEY = '__manual__';
+
+function OrdersListCard({ orders, indentBatches, onDeleteOrders }) {
   const grouped = useMemo(() => {
     const byBatch = {};
     const manual = [];
@@ -3514,9 +3542,159 @@ function OrdersListCard({ orders, indentBatches }) {
     return { batchGroups, manual: [...manual, ...orphaned] };
   }, [orders, indentBatches]);
 
+  // Delete menu: null (closed) | 'menu' | 'select' | 'lastMonth' | 'all'
+  const [deleteMode, setDeleteMode] = useState(null);
+  const [selectedGroups, setSelectedGroups] = useState(() => new Set());
+  const [typedConfirm, setTypedConfirm] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteMsg, setDeleteMsg] = useState('');
+
+  const closeDelete = () => { setDeleteMode(null); setSelectedGroups(new Set()); setTypedConfirm(''); };
+  const toggleGroup = (key) => setSelectedGroups((prev) => {
+    const n = new Set(prev);
+    if (n.has(key)) n.delete(key); else n.add(key);
+    return n;
+  });
+
+  const lastMonth = previousMonthInfo();
+  // An indent batch's date is its purchase date, falling back to its orders'
+  // fulfilment date; a manually added order uses its own fulfilment date.
+  const lastMonthTarget = useMemo(() => {
+    const inMonth = (d) => !!d && String(d).startsWith(lastMonth.prefix);
+    const batchIds = [];
+    const orderIds = [];
+    grouped.batchGroups.forEach(({ batch, orders: os }) => {
+      const date = batch.purchaseDate || os[0]?.fulfilmentDate || '';
+      if (inMonth(date)) { batchIds.push(batch.id); os.forEach((o) => orderIds.push(o.id)); }
+    });
+    grouped.manual.forEach((o) => { if (inMonth(o.fulfilmentDate)) orderIds.push(o.id); });
+    return { batchIds, orderIds };
+  }, [grouped, lastMonth.prefix]);
+
+  const selectedTarget = useMemo(() => {
+    const batchIds = [];
+    const orderIds = [];
+    grouped.batchGroups.forEach(({ batch, orders: os }) => {
+      if (selectedGroups.has(batch.id)) { batchIds.push(batch.id); os.forEach((o) => orderIds.push(o.id)); }
+    });
+    if (selectedGroups.has(MANUAL_GROUP_KEY)) grouped.manual.forEach((o) => orderIds.push(o.id));
+    return { batchIds, orderIds };
+  }, [grouped, selectedGroups]);
+
+  const allTarget = useMemo(() => ({
+    orderIds: orders.map((o) => o.id),
+    batchIds: grouped.batchGroups.map(({ batch }) => batch.id),
+  }), [orders, grouped]);
+
+  const runDelete = async (target) => {
+    if (!target.orderIds.length && !target.batchIds.length) return;
+    setDeleting(true);
+    setDeleteMsg('');
+    try {
+      await onDeleteOrders(target.orderIds, target.batchIds);
+      setDeleteMsg(`${target.orderIds.length} order${target.orderIds.length === 1 ? '' : 's'} deleted.`);
+      closeDelete();
+    } catch (err) {
+      setDeleteMsg('Some orders could not be deleted. Please check your internet and try again.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const btn = (bg, color, border) => ({ background: bg, color, border: border || 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12, fontWeight: 700 });
+  const dangerBtn = (disabled) => ({ ...btn(TOMATO, '#fff'), opacity: disabled ? 0.5 : 1 });
+  const cancelBtn = btn('#fff', INK, `1px solid ${LINE}`);
+  const box = { border: `1px solid ${TOMATO}`, background: '#FFF6F3', borderRadius: 10, padding: '10px 12px', marginBottom: 10 };
+  const plural = (n) => `${n} order${n === 1 ? '' : 's'}`;
+
   return (
     <Card>
-      <div style={sectionTitle}>All orders ({orders.length})</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: SPACE.sm }}>
+        <div style={{ ...sectionTitle, marginBottom: 0 }}>All orders ({orders.length})</div>
+        {orders.length > 0 && (
+          <button
+            onClick={() => { setDeleteMsg(''); setDeleteMode(deleteMode ? null : 'menu'); setSelectedGroups(new Set()); setTypedConfirm(''); }}
+            style={{ ...btn('#fff', TOMATO, `1px solid ${TOMATO}`), padding: '6px 10px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          >
+            <Trash2 size={13} /> Delete
+          </button>
+        )}
+      </div>
+
+      {deleteMsg && <div style={{ fontSize: 12, fontWeight: 700, color: deleteMsg.includes('could not') ? TOMATO : LEAF_DARK, marginBottom: 10 }}>{deleteMsg}</div>}
+
+      {deleteMode === 'menu' && (
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', marginBottom: 10 }}>
+          {[
+            ['select', 'DELETE SELECTED'],
+            ['lastMonth', 'DELETE LAST MONTH ORDERS'],
+            ['all', 'DELETE ALL'],
+          ].map(([mode, text], idx) => (
+            <button
+              key={mode}
+              onClick={() => setDeleteMode(mode)}
+              style={{ display: 'block', width: '100%', textAlign: 'left', background: '#fff', border: 'none', borderTop: idx ? `1px solid ${LINE}` : 'none', padding: '12px 14px', fontSize: 12, fontWeight: 700, color: TOMATO }}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {deleteMode === 'select' && (
+        <div style={box}>
+          <div style={{ fontSize: 12, marginBottom: 8 }}>
+            Tick the orders below that you want to delete. <b>{selectedGroups.size}</b> selected ({plural(selectedTarget.orderIds.length)}).
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button disabled={deleting || selectedGroups.size === 0} onClick={() => runDelete(selectedTarget)} style={dangerBtn(deleting || selectedGroups.size === 0)}>
+              {deleting ? 'Deleting…' : `Delete selected (${selectedGroups.size})`}
+            </button>
+            <button onClick={closeDelete} style={cancelBtn}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {deleteMode === 'lastMonth' && (
+        <div style={box}>
+          <div style={{ fontSize: 12, marginBottom: 8 }}>
+            {lastMonthTarget.orderIds.length === 0
+              ? <>There are no orders from <b>{lastMonth.name}</b>.</>
+              : <>This will permanently delete <b>{plural(lastMonthTarget.orderIds.length)}</b> from <b>{lastMonth.name}</b> ({lastMonthTarget.batchIds.length} indent{lastMonthTarget.batchIds.length === 1 ? '' : 's'}). Are you sure?</>}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {lastMonthTarget.orderIds.length > 0 && (
+              <button disabled={deleting} onClick={() => runDelete(lastMonthTarget)} style={dangerBtn(deleting)}>
+                {deleting ? 'Deleting…' : `Yes, delete ${lastMonth.name}`}
+              </button>
+            )}
+            <button onClick={closeDelete} style={cancelBtn}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {deleteMode === 'all' && (
+        <div style={box}>
+          <div style={{ fontSize: 12, marginBottom: 8 }}>
+            This will permanently delete <b>all {plural(orders.length)}</b> in this city. This cannot be undone.
+            <br />Type <b>DELETE</b> below to confirm.
+          </div>
+          <input
+            value={typedConfirm}
+            onChange={(e) => setTypedConfirm(e.target.value)}
+            placeholder="Type DELETE"
+            autoCapitalize="characters"
+            style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 14, marginBottom: 8 }}
+          />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button disabled={deleting || typedConfirm.trim() !== 'DELETE'} onClick={() => runDelete(allTarget)} style={dangerBtn(deleting || typedConfirm.trim() !== 'DELETE')}>
+              {deleting ? 'Deleting…' : 'Delete all orders'}
+            </button>
+            <button onClick={closeDelete} style={cancelBtn}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       {grouped.batchGroups.map(({ batch, orders: groupOrders }) => (
         <OrderBatchGroupMobile
           key={batch.id}
@@ -3525,10 +3703,20 @@ function OrdersListCard({ orders, indentBatches }) {
           badgeText={batch.released ? 'Released' : 'Not released'}
           badgeColor={batch.released ? 'blue' : 'amber'}
           orders={groupOrders}
+          selectable={deleteMode === 'select'}
+          selected={selectedGroups.has(batch.id)}
+          onToggleSelect={() => toggleGroup(batch.id)}
         />
       ))}
       {grouped.manual.length > 0 && (
-        <OrderBatchGroupMobile label="Manually added orders" orders={grouped.manual} defaultOpen={grouped.batchGroups.length === 0} />
+        <OrderBatchGroupMobile
+          label="Manually added orders"
+          orders={grouped.manual}
+          defaultOpen={grouped.batchGroups.length === 0}
+          selectable={deleteMode === 'select'}
+          selected={selectedGroups.has(MANUAL_GROUP_KEY)}
+          onToggleSelect={() => toggleGroup(MANUAL_GROUP_KEY)}
+        />
       )}
       {orders.length === 0 && <div style={hint}>No orders yet.</div>}
     </Card>
