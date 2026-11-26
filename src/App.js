@@ -3218,8 +3218,10 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
       ...prev,
       rows: prev.rows.map((r) => {
         if (r.key !== key) return r;
-        if (value === '__new__') {
-          const newItem = { id: `IT-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: r.rawName, uom: r.unit || 'kg', category: normalizeCategory(r.rawCategory), aliases: [{ id: newAliasId(), channel: prev.platform, code: r.rawCode || '', ean: r.rawEan || '', packSize: '', packUnit: 'kg' }] };
+        // "__new__:<CATEGORY>" — the user picks the new item's category
+        // themselves; the indent's own category is never copied into Items.
+        if (String(value).startsWith('__new__:')) {
+          const newItem = { id: `IT-${Date.now().toString(36).toUpperCase().slice(-5)}`, name: r.rawName, uom: r.unit || 'kg', category: String(value).slice('__new__:'.length), aliases: [{ id: newAliasId(), channel: prev.platform, code: r.rawCode || '', ean: r.rawEan || '', packSize: '', packUnit: 'kg' }] };
           onAddItem(newItem);
           return { ...r, mappedItemId: newItem.id };
         }
@@ -3471,7 +3473,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
                       >
                         <option value="">Not mapped</option>
                         {items.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}
-                        <option value="__new__">{`+ New "${r.rawName}"`}</option>
+                        {CATEGORY_OPTIONS.map((c) => <option key={c} value={`__new__:${c}`}>{`+ New "${r.rawName}" in ${c}`}</option>)}
                       </SmartSelect>
                       {mappedItem && rowAlias && (
                         <>
