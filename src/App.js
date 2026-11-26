@@ -3006,10 +3006,9 @@ function CutProcessTab({ items, recipes, orders, onAddRecipe, onDeleteRecipe, on
 // ---------- Orders ----------
 // ── Printable packing / dispatch lists for an uploaded indent ──
 // Staff pin the packing list on the board and use the dispatch list to load
-// each store's share, so both are plain Excel sheets meant for people: one row
-// per article, sorted by category Z→A (then biggest quantity first), with an
-// Excel filter on the header row. Quantities are in the channel's own packs,
-// exactly as the indent lists them.
+// each store's share, so both are A4 PDFs meant for people: one row per
+// article, grouped by category Z→A (then biggest quantity first).
+// Quantities are in the channel's own packs, exactly as the indent lists them.
 function indentListArticles(batchOrders, items) {
   const byKey = {};
   const order = [];
@@ -3040,33 +3039,192 @@ function indentListArticles(batchOrders, items) {
     String(x.name).localeCompare(String(y.name)));
 }
 
-function downloadIndentList(kind, batch, batchOrders, items) {
-  const articles = indentListArticles(batchOrders, items);
-  const date = batchOrders[0]?.fulfilmentDate || batch.purchaseDate || '';
-  const isPacking = kind === 'packing';
-  const stores = isPacking ? [] : Array.from(new Set(articles.flatMap((a) => Object.keys(a.stores)))).sort((a, b) => a.localeCompare(b));
-  const header = isPacking
-    ? ['S.No', 'Article Name', 'Category', 'UOM', 'Total Qty']
-    : ['S.No', 'Article Name', 'Category', 'UOM', ...stores];
-  const body = articles.map((a, i) => (isPacking
-    ? [i + 1, a.name, a.category, a.uom, a.total]
-    : [i + 1, a.name, a.category, a.uom, ...stores.map((s) => a.stores[s] || '')]));
-  const title = `${batch.platform} ${isPacking ? 'Packing' : 'Dispatch'} List${date ? ` — ${date}` : ''}`;
-  const ws = XLSX.utils.aoa_to_sheet([[title], header, ...body]);
-  // Filter on the header row (row 2), covering every article row below it.
-  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: body.length + 1, c: header.length - 1 } }) };
-  ws['!cols'] = [{ wch: 6 }, { wch: 42 }, { wch: 18 }, { wch: 16 }, ...(isPacking ? [{ wch: 10 }] : stores.map((s) => ({ wch: Math.max(10, s.length + 2) })))];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, isPacking ? 'Packing List' : 'Dispatch List');
-  const safeDate = date ? `_${date}` : '';
-  XLSX.writeFile(wb, `${batch.platform}_${isPacking ? 'Packing' : 'Dispatch'}_List${safeDate}.xlsx`);
+// jsPDF + its table plugin are loaded on demand from the CDN (same approach as
+// pdf.js above), so they add nothing to the app's own bundle.
+const JSPDF_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+const JSPDF_AUTOTABLE_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-src="${src}"]`);
+    if (existing) {
+      if (existing.dataset.loaded === '1') { resolve(); return; }
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error(`Could not load ${src}`)));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.dataset.src = src;
+    script.onload = () => { script.dataset.loaded = '1'; resolve(); };
+    script.onerror = () => reject(new Error(`Could not load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+async function loadJsPdf() {
+  if (!(window.jspdf && window.jspdf.jsPDF)) await loadScriptOnce(JSPDF_SRC);
+  const { jsPDF } = window.jspdf;
+  if (typeof jsPDF.API.autoTable !== 'function') await loadScriptOnce(JSPDF_AUTOTABLE_SRC);
+  return jsPDF;
 }
 
-function ReleaseBatchCard({ batch: b, orders, items = [], onToggleReleaseBatch, onDeleteBatch }) {
+const fmtListDate = (d) => {
+  const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(d || '');
+};
+const fmtListQty = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100));
+
+// A4 PDF for printing: company name + date in the heading, articles grouped by
+// category (Z→A, biggest quantity first inside each), a total row, page numbers.
+async function downloadIndentListPdf(kind, batch, batchOrders, items, companyName) {
+  const jsPDF = await loadJsPdf();
+  const isPacking = kind === 'packing';
+  const articles = indentListArticles(batchOrders, items);
+  const date = batchOrders[0]?.fulfilmentDate || batch.purchaseDate || '';
+  const stores = isPacking ? [] : Array.from(new Set(articles.flatMap((a) => Object.keys(a.stores)))).sort((a, b) => a.localeCompare(b));
+  const landscape = !isPacking && stores.length > 5;
+  const doc = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  const GREEN = [27, 46, 29];
+  const LEAF_RGB = [47, 93, 52];
+  const BAND = [234, 243, 222];
+  const GREY = [110, 110, 100];
+
+  const title = isPacking ? 'PACKAGING LIST' : 'DISPATCH LIST';
+  const totalQty = articles.reduce((s, a) => s + a.total, 0);
+  const company = String(companyName || COMPANY_NAME).toUpperCase();
+
+  const head = isPacking
+    ? [['S.No', 'Article Name', 'Category', 'UOM', 'Total Qty']]
+    : [['S.No', 'Article Name', 'Category', 'UOM', ...stores, 'Total']];
+  const colCount = head[0].length;
+
+  // Body grouped by category, with a shaded band row opening each group.
+  const body = [];
+  let serial = 0;
+  let currentCat = null;
+  articles.forEach((a) => {
+    const cat = a.category || 'Other';
+    if (cat !== currentCat) {
+      currentCat = cat;
+      const inCat = articles.filter((x) => (x.category || 'Other') === cat);
+      const catQty = inCat.reduce((s, x) => s + x.total, 0);
+      body.push([{
+        content: `${cat.toUpperCase()}   |   ${inCat.length} article${inCat.length === 1 ? '' : 's'}   |   ${fmtListQty(catQty)} qty`,
+        colSpan: colCount,
+        styles: { fillColor: BAND, textColor: GREEN, fontStyle: 'bold', fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
+      }]);
+    }
+    serial += 1;
+    body.push(isPacking
+      ? [serial, a.name, a.category, a.uom, fmtListQty(a.total)]
+      : [serial, a.name, a.category, a.uom, ...stores.map((s) => (a.stores[s] ? fmtListQty(a.stores[s]) : '-')), fmtListQty(a.total)]);
+  });
+  const foot = isPacking
+    ? [['', `TOTAL  (${articles.length} articles)`, '', '', fmtListQty(totalQty)]]
+    : [['', `TOTAL  (${articles.length} articles)`, '', '', ...stores.map((s) => fmtListQty(articles.reduce((sum, a) => sum + (a.stores[s] || 0), 0))), fmtListQty(totalQty)]];
+
+  const drawHeader = () => {
+    doc.setTextColor(...GREEN);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text(company, pageW / 2, 15, { align: 'center' });
+    doc.setFontSize(12);
+    doc.setTextColor(...LEAF_RGB);
+    doc.text(`${batch.platform.toUpperCase()}  ${title}`, pageW / 2, 22, { align: 'center' });
+    // Info strip: date on the left, counts on the right.
+    doc.setFillColor(246, 243, 234);
+    doc.roundedRect(margin, 26, pageW - margin * 2, 9, 1.5, 1.5, 'F');
+    doc.setFontSize(10);
+    doc.setTextColor(...GREEN);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Date: ${fmtListDate(date) || '-'}`, margin + 3, 31.8);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Articles: ${articles.length}     Total Qty: ${fmtListQty(totalQty)}${isPacking ? '' : `     Stores: ${stores.length}`}`, pageW - margin - 3, 31.8, { align: 'right' });
+  };
+
+  const qtyCol = isPacking ? { 4: { halign: 'center', fontStyle: 'bold', cellWidth: 22 } } : {};
+  const storeCols = {};
+  if (!isPacking) {
+    stores.forEach((_, i) => { storeCols[4 + i] = { halign: 'center' }; });
+    storeCols[4 + stores.length] = { halign: 'center', fontStyle: 'bold', fillColor: [246, 243, 234] };
+  }
+
+  doc.autoTable({
+    head,
+    body,
+    foot,
+    startY: 39,
+    margin: { top: 39, left: margin, right: margin, bottom: 16 },
+    theme: 'grid',
+    showFoot: 'lastPage',
+    styles: { font: 'helvetica', fontSize: isPacking ? 9.5 : 8.5, cellPadding: { top: 1.15, bottom: 1.15, left: 2, right: 2 }, textColor: [30, 30, 28], lineColor: [214, 209, 194], lineWidth: 0.2, valign: 'middle', overflow: 'linebreak' },
+    headStyles: { fillColor: GREEN, textColor: 255, fontStyle: 'bold', halign: 'center', valign: 'middle', fontSize: isPacking ? 9.5 : 8, cellPadding: 2 },
+    footStyles: { fillColor: GREEN, textColor: 255, fontStyle: 'bold', halign: 'center', cellPadding: 2 },
+    alternateRowStyles: { fillColor: [251, 250, 246] },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 13 },
+      1: { halign: 'left', fontStyle: 'bold', cellWidth: isPacking ? 'auto' : (landscape ? 62 : 50) },
+      2: { halign: 'left', cellWidth: isPacking ? 32 : 22, textColor: GREY },
+      3: { halign: 'center', cellWidth: isPacking ? 32 : 28 },
+      ...qtyCol,
+      ...storeCols,
+    },
+    didParseCell: (data) => {
+      if (data.section === 'foot' && data.column.index === 1) data.cell.styles.halign = 'left';
+    },
+    didDrawPage: () => {
+      drawHeader();
+      const page = doc.internal.getCurrentPageInfo().pageNumber;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(...GREY);
+      doc.setDrawColor(214, 209, 194);
+      doc.line(margin, pageH - 11, pageW - margin, pageH - 11);
+      doc.text(`${company}  |  ${batch.platform} ${isPacking ? 'Packaging' : 'Dispatch'} List  |  ${fmtListDate(date)}`, margin, pageH - 6.5);
+      doc.text(`Page ${page} of {total_pages}`, pageW - margin, pageH - 6.5, { align: 'right' });
+    },
+  });
+
+  // Sign-off line under the table (new page if it doesn't fit).
+  let y = doc.lastAutoTable.finalY + 14;
+  if (y > pageH - 22) { doc.addPage(); drawHeader(); y = 52; }
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(...GREEN);
+  const third = (pageW - margin * 2) / 3;
+  [isPacking ? 'Packed by' : 'Dispatched by', 'Checked by', 'Date / Time'].forEach((label, i) => {
+    const x = margin + third * i;
+    doc.setDrawColor(150, 150, 140);
+    doc.line(x + 2, y, x + third - 8, y);
+    doc.text(label, x + 2, y + 5);
+  });
+
+  if (typeof doc.putTotalPages === 'function') doc.putTotalPages('{total_pages}');
+  const safeDate = date ? `_${date}` : '';
+  doc.save(`${batch.platform}_${isPacking ? 'Packaging' : 'Dispatch'}_List${safeDate}.pdf`);
+}
+
+function ReleaseBatchCard({ batch: b, orders, items = [], companyName = '', onToggleReleaseBatch, onDeleteBatch }) {
   const [purchaseDate, setPurchaseDate] = useState(b.purchaseDate || '');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const batchOrders = useMemo(() => orders.filter((o) => o.batchId === b.id), [orders, b.id]);
+  const [listBusy, setListBusy] = useState('');
+  const [listError, setListError] = useState('');
+  const downloadList = async (kind) => {
+    setListBusy(kind);
+    setListError('');
+    try {
+      await downloadIndentListPdf(kind, b, batchOrders, items, companyName);
+    } catch (err) {
+      setListError('Could not create the PDF. Please check your internet and try again.');
+    } finally {
+      setListBusy('');
+    }
+  };
   const articleCount = new Set(batchOrders.map((o) => o.articleName || o.product)).size;
   const totalQty = batchOrders.reduce((s, o) => s + (Number(o.packQty) || 0), 0);
   const fulfilmentDate = batchOrders[0]?.fulfilmentDate || '';
@@ -3118,14 +3276,15 @@ function ReleaseBatchCard({ batch: b, orders, items = [], onToggleReleaseBatch, 
       </button>
       {b.platform === 'Flipkart' && batchOrders.length > 0 && (
         <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-          <button onClick={() => downloadIndentList('packing', b, batchOrders, items)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 7, padding: '7px 8px', fontSize: 11, fontWeight: 700 }}>
-            <Download size={12} /> Packaging List
+          <button disabled={!!listBusy} onClick={() => downloadList('packing')} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 7, padding: '7px 8px', fontSize: 11, fontWeight: 700 }}>
+            <Download size={12} /> {listBusy === 'packing' ? 'Preparing PDF…' : 'Packaging List (PDF)'}
           </button>
-          <button onClick={() => downloadIndentList('dispatch', b, batchOrders, items)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 7, padding: '7px 8px', fontSize: 11, fontWeight: 700 }}>
-            <Download size={12} /> Dispatch List
+          <button disabled={!!listBusy} onClick={() => downloadList('dispatch')} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 7, padding: '7px 8px', fontSize: 11, fontWeight: 700 }}>
+            <Download size={12} /> {listBusy === 'dispatch' ? 'Preparing PDF…' : 'Dispatch List (PDF)'}
           </button>
         </div>
       )}
+      {listError && <p style={{ margin: '6px 0 0', fontSize: 11, color: TOMATO }}>{listError}</p>}
     </div>
   );
 }
