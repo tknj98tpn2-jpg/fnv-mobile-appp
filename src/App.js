@@ -874,6 +874,9 @@ export default function FnvMobilePreview() {
     fbSetDoc('dispatchLog', did, { id: did, date: dispatchDate, items: logItems, orderIds: logItems.map((li) => li.orderId), totalDispatchQty, vehicleNo: vehicleNo || '—', driverName: driverName || '—', cratesUsed, boxesUsed, time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), city: effectiveCity });
   };
   const createIndentBatch = (b) => fbSetDoc('indentBatches', b.id, { ...b, city: effectiveCity });
+  // Permanent per-indent record for the admin Dashboard's trend charts — never
+  // removed when orders/indents are deleted.
+  const recordIndentHistory = (h) => fbSetDoc('indentHistory', h.id, { ...h, city: effectiveCity, savedAt: new Date().toISOString() }).catch(() => {});
   const updateIndentBatch = (batchId, patch) => fbUpdate('indentBatches', batchId, patch);
   // An article is only ever fully resolved two ways: fully packed, or packed+short
   // adding up to the full target — there's no partial/unresolved state that reaches
@@ -1078,7 +1081,7 @@ export default function FnvMobilePreview() {
             <OrdersTab
               orders={cityOrders} items={cityItems} indentBatches={cityIndentBatches}
               onImport={importOrder} onAddItem={addItem} onEnsureAlias={ensureAliasForCode} onUpdateAlias={updateAliasById}
-              onCreateIndentBatch={createIndentBatch} onToggleReleaseBatch={toggleReleaseBatch}
+              onCreateIndentBatch={createIndentBatch} onRecordIndentHistory={recordIndentHistory} onToggleReleaseBatch={toggleReleaseBatch}
               canAdvanceIndent={hasSensitivePermission(currentRole?.permissions, 'advanceindent')}
               onExcludeOldFromPurchase={excludeOldOrdersFromPurchase}
               onResetOldOrders={resetOldOrders}
@@ -3127,7 +3130,7 @@ function ReleaseBatchCard({ batch: b, orders, items = [], onToggleReleaseBatch, 
   );
 }
 
-function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onToggleReleaseBatch, canAdvanceIndent, onExcludeOldFromPurchase, onResetOldOrders }) {
+function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsureAlias, onUpdateAlias, onCreateIndentBatch, onRecordIndentHistory, onToggleReleaseBatch, canAdvanceIndent, onExcludeOldFromPurchase, onResetOldOrders }) {
   const [platform, setPlatform] = useState('Blinkit');
   const [product, setProduct] = useState('');
   const [qty, setQty] = useState('');
@@ -3256,6 +3259,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
     const batchId = `BATCH-${Date.now().toString(36).toUpperCase().slice(-6)}`;
     const orderIdBase = Date.now().toString(36).toUpperCase().slice(-5);
     let orderSeq = 0;
+    const historyMap = {};
     pendingIndent.rows.forEach((r) => {
       if (!isRowReady(r) || !selectedRowKeys.has(r.key)) { remaining.push(r); return; }
       const item = items.find((it) => it.id === r.mappedItemId);
@@ -3297,9 +3301,19 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
         });
         compiledMap[key].qty += storeQty;
       });
+      // Indent history (admin Dashboard trends): this article's total packs in this indent.
+      const rowPacks = storeEntries.reduce((s, [, p]) => s + (p > 0 ? Number(p) : 0), 0);
+      if (rowPacks > 0) {
+        const hk = r.rawEan ? `ean:${String(r.rawEan).trim()}` : `name:${String(r.rawName || '').trim().toLowerCase()}`;
+        if (!historyMap[hk]) historyMap[hk] = { k: hk, n: r.rawName, c: r.rawCategory || '', q: 0 };
+        historyMap[hk].q = Math.round((historyMap[hk].q + rowPacks) * 100) / 100;
+      }
     });
     const compiled = Object.values(compiledMap);
     if (compiled.length > 0) {
+      if (onRecordIndentHistory && Object.keys(historyMap).length > 0) {
+        onRecordIndentHistory({ id: batchId, batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, date: pendingIndent.fulfilmentDate || '', isAdvance: !!pendingIndent.isAdvance, articles: Object.values(historyMap) });
+      }
       onCreateIndentBatch({ id: batchId, platform: pendingIndent.platform, fileName: pendingIndent.fileName, compiled, released: false, purchaseRowIds: [], isAdvance: !!pendingIndent.isAdvance });
       // A regular (non-advance) indent means today's real requirement has
       // arrived — clear old, still-open orders out of the purchase list so a
