@@ -74,11 +74,11 @@ const STATUS_COLORS = {
   neutral: { bg: '#F1EFE6', fg: MUTED },
 };
 
-const PLATFORMS = ['Blinkit', 'Flipkart', 'Zepto'];
+const PLATFORMS = ['Blinkit', 'Flipkart'];
 // Channels whose own item code is not a reliable identifier (it can be
 // reissued on a relisting, or — for Zepto — is an internal UUID rather than a
 // stable article code) — matching for these channels relies on EAN only.
-const EAN_ONLY_PLATFORMS = new Set(['Flipkart', 'Zepto']);
+const EAN_ONLY_PLATFORMS = new Set(['Flipkart']);
 
 // Each indent can be split across dark stores (Flipkart lists one column per store);
 // Blinkit has a single store. Orders carry a `store`; older orders without one fall back
@@ -192,7 +192,10 @@ function usePersistedState(key, defaultValue) {
   const [state, setState] = useState(() => {
     try {
       const saved = window.localStorage.getItem(key);
-      return saved !== null ? JSON.parse(saved) : defaultValue;
+      const parsed = saved !== null ? JSON.parse(saved) : defaultValue;
+      // Zepto is no longer a channel — a device that last had Zepto picked in a
+      // channel filter falls back to the default instead of showing nothing.
+      return parsed === 'Zepto' ? defaultValue : parsed;
     } catch {
       return defaultValue;
     }
@@ -1690,7 +1693,7 @@ function DashboardTab({ orders, purchases, crates, packingProgress, dispatchLog 
   const today = todayLocalDate();
   const todayTrips = dispatchLog.filter((d) => d.date === today).length;
   const todaySpend = purchases.filter((p) => p.date === today).reduce((s, p) => s + p.cost, 0);
-  // One progress card per platform (Blinkit, Flipkart, Zepto, and any future
+  // One progress card per platform (Blinkit, Flipkart, and any future
   // channel) — driven off PLATFORMS so a new channel shows up here automatically.
   const channelProgress = PLATFORMS.map((p) => ({ platform: p, progress: computeChannelDayProgress(orders, packingProgress, p, today) }));
   return (
@@ -2730,7 +2733,7 @@ function ItemForm({ initial, onSave, onCancel }) {
       <Card>
         <div style={{ fontWeight: 800, fontSize: 16 }}>{isEdit ? `Edit ${initial.name}` : 'Create item'}</div>
         <div style={{ ...hint, marginTop: 4 }}>
-          Items are generic — add an alias for each channel it's sold on (Blinkit, Flipkart, Zepto, etc.), with that channel's own item name/code and pack size.
+          Items are generic — add an alias for each channel it's sold on (Blinkit, Flipkart, etc.), with that channel's own item name/code and pack size.
         </div>
 
         <div style={smallLabel}>ITEM NAME</div>
@@ -2750,7 +2753,7 @@ function ItemForm({ initial, onSave, onCancel }) {
 
         <div style={{ borderTop: `1px solid ${LINE}`, paddingTop: 12, marginTop: 4 }}>
           <div style={sectionTitle}>Channel aliases</div>
-          <div style={hint}>e.g. Blinkit's 1kg Tomato pack, Flipkart's 500g pack, Zepto's 350g pack — each with its own channel item code.</div>
+          <div style={hint}>e.g. Blinkit's 1kg Tomato pack, Flipkart's 500g pack — each with its own channel item code.</div>
           {aliases.map((a) => (
             <AliasRowMobile key={a.id} alias={a} onChange={(next) => updateAliasRow(a.id, next)} onRemove={() => removeAliasRow(a.id)} />
           ))}
