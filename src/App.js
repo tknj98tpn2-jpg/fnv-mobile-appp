@@ -214,6 +214,12 @@ function pickField(rowObj, candidates) {
   return '';
 }
 const KNOWN_INDENT_HEADERS = new Set(['fsn', 'title', 'category', 'type', 'umo', 'uom', 'unit', 'mrp', 'price', 't100t500fsn', 'eancode', 'shelflifedays', 'shelflife', 'temperaturezone', 'itemcode', 'articlecode', 'productcode', 'sku', 'code', 'productdescription', 'description', 'article', 'product', 'item', 'productname', 'indent', 'qty', 'quantity', 'orderedqty', 'finalindent', 'storename', 'storeid', 'subcategory', 'vendername', 'city', 'cc', 'bb', 'rr']);
+// True for a summary label like "Total", "Total Result", "Grand Total" or "Sum".
+function isTotalLabel(v) {
+  const t = String(v || '').toLowerCase().trim();
+  return /^(grand\s*)?total\b/.test(t) || /\btotal\s*(result|qty|quantity|indent)?$/.test(t) || t === 'sum';
+}
+
 function sumUnknownNumericColumns(rowObj, headers) {
   // Returns { "<store column header>": qty } for every leftover numeric column with a
   // positive value, or null when there is none.
@@ -222,6 +228,9 @@ function sumUnknownNumericColumns(rowObj, headers) {
     if (!h) return;
     const norm = h.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (KNOWN_INDENT_HEADERS.has(norm)) return;
+    // Summary columns (e.g. Flipkart's "Total Result" / "Grand Total") repeat the
+    // per-store figures — counting them would double the indent and add a fake store.
+    if (isTotalLabel(h)) return;
     const v = rowObj[h];
     if (v === '' || v === null || v === undefined) return;
     const num = Number(v);
@@ -257,7 +266,9 @@ function parseIndentRows(json, platform) {
       const rawStore = String(pickField(r, ['storename', 'store']) || '').trim();
       return { key: `row-${idx}-${rawName}`, rawName, rawCode, rawEan, qty, unit, rawCategory, storeQtys, rawStore };
     })
-    .filter((r) => r.rawName && r.qty > 0);
+    // Drop the summary row at the bottom of a raw indent (Flipkart's per-store
+    // totals): it has no article name/FSN/EAN, or is labelled "Total".
+    .filter((r) => r.rawName && r.qty > 0 && !isTotalLabel(r.rawName) && !isTotalLabel(r.rawCode));
 
   // Fold "one row per (article, store)" back into "one row per article" with a
   // per-store quantity map — matching the shape a per-store-column format
