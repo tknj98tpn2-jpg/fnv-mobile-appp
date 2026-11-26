@@ -3001,7 +3001,65 @@ function CutProcessTab({ items, recipes, orders, onAddRecipe, onDeleteRecipe, on
 }
 
 // ---------- Orders ----------
-function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch, onDeleteBatch }) {
+// ── Printable packing / dispatch lists for an uploaded indent ──
+// Staff pin the packing list on the board and use the dispatch list to load
+// each store's share, so both are plain Excel sheets meant for people: one row
+// per article, sorted by category Z→A (then biggest quantity first), with an
+// Excel filter on the header row. Quantities are in the channel's own packs,
+// exactly as the indent lists them.
+function indentListArticles(batchOrders, items) {
+  const byKey = {};
+  const order = [];
+  batchOrders.forEach((o) => {
+    const name = o.articleName || o.product || '';
+    const key = o.rawEan ? `ean:${o.rawEan}` : `name:${name.toLowerCase()}`;
+    if (!byKey[key]) {
+      const item = items.find((it) => it.id === o.itemId);
+      const fallbackUom = o.packSize ? `${o.packSize} ${o.packUnit || o.unit || ''}`.trim() : (o.unit || '');
+      byKey[key] = {
+        name,
+        category: o.rawCategory || item?.category || '',
+        uom: o.rawUnit || fallbackUom,
+        total: 0,
+        stores: {},
+      };
+      order.push(byKey[key]);
+    }
+    const a = byKey[key];
+    const packs = Number(o.packQty) || 0;
+    const store = storeLabel(orderStore(o));
+    a.stores[store] = Math.round(((a.stores[store] || 0) + packs) * 100) / 100;
+    a.total = Math.round((a.total + packs) * 100) / 100;
+  });
+  return order.sort((x, y) =>
+    String(y.category).localeCompare(String(x.category), undefined, { sensitivity: 'base' }) ||
+    y.total - x.total ||
+    String(x.name).localeCompare(String(y.name)));
+}
+
+function downloadIndentList(kind, batch, batchOrders, items) {
+  const articles = indentListArticles(batchOrders, items);
+  const date = batchOrders[0]?.fulfilmentDate || batch.purchaseDate || '';
+  const isPacking = kind === 'packing';
+  const stores = isPacking ? [] : Array.from(new Set(articles.flatMap((a) => Object.keys(a.stores)))).sort((a, b) => a.localeCompare(b));
+  const header = isPacking
+    ? ['S.No', 'Article Name', 'Category', 'UOM', 'Total Qty']
+    : ['S.No', 'Article Name', 'Category', 'UOM', ...stores];
+  const body = articles.map((a, i) => (isPacking
+    ? [i + 1, a.name, a.category, a.uom, a.total]
+    : [i + 1, a.name, a.category, a.uom, ...stores.map((s) => a.stores[s] || '')]));
+  const title = `${batch.platform} ${isPacking ? 'Packing' : 'Dispatch'} List${date ? ` — ${date}` : ''}`;
+  const ws = XLSX.utils.aoa_to_sheet([[title], header, ...body]);
+  // Filter on the header row (row 2), covering every article row below it.
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: body.length + 1, c: header.length - 1 } }) };
+  ws['!cols'] = [{ wch: 6 }, { wch: 42 }, { wch: 18 }, { wch: 16 }, ...(isPacking ? [{ wch: 10 }] : stores.map((s) => ({ wch: Math.max(10, s.length + 2) })))];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, isPacking ? 'Packing List' : 'Dispatch List');
+  const safeDate = date ? `_${date}` : '';
+  XLSX.writeFile(wb, `${batch.platform}_${isPacking ? 'Packing' : 'Dispatch'}_List${safeDate}.xlsx`);
+}
+
+function ReleaseBatchCard({ batch: b, orders, items = [], onToggleReleaseBatch, onDeleteBatch }) {
   const [purchaseDate, setPurchaseDate] = useState(b.purchaseDate || '');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -3055,6 +3113,16 @@ function ReleaseBatchCard({ batch: b, orders, onToggleReleaseBatch, onDeleteBatc
       >
         {b.released ? 'Withdraw from Purchase Manager' : 'Release to Purchase Manager'}
       </button>
+      {b.platform === 'Flipkart' && batchOrders.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => downloadIndentList('packing', b, batchOrders, items)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 7, padding: '7px 8px', fontSize: 11, fontWeight: 700 }}>
+            <Download size={12} /> Packaging List
+          </button>
+          <button onClick={() => downloadIndentList('dispatch', b, batchOrders, items)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, background: '#fff', color: LEAF, border: `1px solid ${LEAF}`, borderRadius: 7, padding: '7px 8px', fontSize: 11, fontWeight: 700 }}>
+            <Download size={12} /> Dispatch List
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -3221,6 +3289,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
           packSize,
           packUnit,
           rawUnit: r.unit || '',
+          rawCategory: r.rawCategory || '',
           isAdvance: !!pendingIndent.isAdvance,
           batchId,
         });
@@ -3309,6 +3378,7 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
               batch={b}
               orders={orders}
               onToggleReleaseBatch={onToggleReleaseBatch}
+              items={items}
               onDeleteBatch={(batchId) => onResetOldOrders(orders.filter((o) => o.batchId === batchId).map((o) => o.id), [batchId])}
             />
           ))}
@@ -3337,7 +3407,8 @@ function OrdersTab({ orders, items, indentBatches, onImport, onAddItem, onEnsure
                       batch={b}
                       orders={orders}
                       onToggleReleaseBatch={onToggleReleaseBatch}
-                      onDeleteBatch={(batchId) => onResetOldOrders(orders.filter((o) => o.batchId === batchId).map((o) => o.id), [batchId])}
+                      items={items}
+              onDeleteBatch={(batchId) => onResetOldOrders(orders.filter((o) => o.batchId === batchId).map((o) => o.id), [batchId])}
                     />
                   ))}
                 </>
