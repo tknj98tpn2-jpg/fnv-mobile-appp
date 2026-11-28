@@ -480,6 +480,7 @@ export default function FnvMobilePreview() {
   const [gradingRecords, setGradingRecords] = useState([]); // per-item quality grading entries (Grade A / Grade B / Dump split)
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [salesPayments, setSalesPayments] = useState([]);
+  const [directSales, setDirectSales] = useState([]); // Direct Sale bills (walk-in / other customers)
   const [staff, setStaff] = useState([]);
   const [staffAdvances, setStaffAdvances] = useState([]);
   const [staffAttendance, setStaffAttendance] = useState([]);
@@ -557,7 +558,15 @@ export default function FnvMobilePreview() {
       setPurchaseOrderPlaced(map);
     });
 
-    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); unsub5(); };
+    // Direct Sale bills — own listener with an error handler so it can never
+    // hold up app loading.
+    const unsubDs = onSnapshot(
+      collection(db, 'directSales'),
+      (snap) => setDirectSales(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
+      () => setDirectSales([])
+    );
+
+    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); unsub5(); unsubDs(); };
   }, []);
 
   // ── Session — restore a saved login once the users list has loaded ──
@@ -956,6 +965,8 @@ export default function FnvMobilePreview() {
   // twice overwrites rather than creating duplicates - same scheme the admin
   // panel writes, so a day marked from either app shows correctly in both.
   const saveSalesInvoice = (invoice) => fbSetDoc('salesInvoices', invoice.id, { ...invoice, city: effectiveCity });
+  const saveDirectSale = (bill) => fbSetDoc('directSales', bill.id, { ...bill, city: bill.city || effectiveCity });
+  const deleteDirectSale = (id) => fbDelete('directSales', id);
   const deleteSalesInvoice = (id) => fbDelete('salesInvoices', id);
   const saveSalesPayment = (payment) => fbSetDoc('salesPayments', payment.id, { ...payment, city: effectiveCity });
   const deleteSalesPayment = (id) => fbDelete('salesPayments', id);
@@ -1100,6 +1111,10 @@ export default function FnvMobilePreview() {
           {tab === 'pricing' && <PricingTab orders={cityOrders} items={cityItems} allItems={items} recipes={recipes} purchases={pricingPurchases} pricingConfig={pricingConfig} city={effectiveCity} onUpdate={updatePricingConfig} />}
           {tab === 'sales' && (
             <SalesTabMobile
+              directSales={directSales.filter((b) => (b.city || CITIES[0]) === effectiveCity)}
+              allDirectSales={directSales}
+              onSaveDirectSale={saveDirectSale}
+              onDeleteDirectSale={deleteDirectSale}
               items={cityItems}
               allItems={items}
               recipes={recipes}
@@ -5563,7 +5578,706 @@ function parseBlinkitGrnTableWords(pages) {
 
 // ── Sales (mobile) — same verified logic as the admin panel, laid out in a
 // single narrow column instead of the admin's wide multi-panel grid ──
-function SalesTabMobile({ items, allItems, recipes, plSnapshots, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
+// ── Direct Sale ─────────────────────────────────────────────────────────
+// Billing for walk-in / any other customer (outside Blinkit & Flipkart).
+// Each bill is one document in the `directSales` collection:
+//   { id, billNo, seq, date, city, customer: { name, phone, address },
+//     rows: [{ id, itemId, name, qty, unit, rate, amount }],
+//     subtotal, discount, total, payments: [{ id, date, amount, mode, note }],
+//     note, createdAt }
+// Paid / due are always worked out from `payments`, so receiving a later
+// payment against an udhaar bill is just one more entry in that list.
+// Fresh fruits & vegetables are GST-exempt, so the printed bill is a
+// "Bill of Supply" with no tax lines. Stock is not touched by a direct sale.
+const DS_UNITS = ['kg', 'g', 'pcs', 'dozen', 'box', 'crate', 'bunch', 'packet'];
+const DS_PAY_MODES = [
+  { key: 'cash', label: 'Cash' },
+  { key: 'upi', label: 'UPI' },
+  { key: 'bank', label: 'Bank Transfer' },
+  { key: 'cheque', label: 'Cheque' },
+];
+const DS_PAY_LABEL = { cash: 'Cash', upi: 'UPI', bank: 'Bank Transfer', cheque: 'Cheque', credit: 'Udhaar' };
+
+const dsRound = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const dsMoney = (n) => `₹${dsRound(n).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+const dsMoneyPdf = (n) => `Rs. ${dsRound(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const dsToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const dsDate = (d) => {
+  const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(d || '');
+};
+const dsNewId = (p) => `${p}-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
+const dsPaid = (bill) => dsRound((bill.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0));
+const dsDue = (bill) => dsRound(Math.max(0, (Number(bill.total) || 0) - dsPaid(bill)));
+const dsStatus = (bill) => {
+  const paid = dsPaid(bill);
+  if (paid >= (Number(bill.total) || 0) - 0.005) return 'paid';
+  return paid > 0 ? 'partial' : 'credit';
+};
+const DS_STATUS = {
+  paid: { label: 'Paid', fg: '#2F5233', bg: '#EAF3DE' },
+  partial: { label: 'Partial', fg: '#B7791F', bg: '#FBEFDC' },
+  credit: { label: 'Udhaar', fg: '#C0392B', bg: '#F3E7E2' },
+};
+const dsCustomerKey = (c) => (String(c?.phone || '').replace(/\D/g, '').slice(-10) || `name:${String(c?.name || '').trim().toLowerCase()}`);
+
+// Indian-style amount in words for the printed bill ("One Lakh Twenty Rupees Only").
+function dsAmountInWords(amount) {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const two = (n) => (n < 20 ? ones[n] : `${tens[Math.floor(n / 10)]}${n % 10 ? ` ${ones[n % 10]}` : ''}`);
+  const three = (n) => `${n >= 100 ? `${ones[Math.floor(n / 100)]} Hundred${n % 100 ? ' ' : ''}` : ''}${n % 100 ? two(n % 100) : ''}`;
+  const words = (n) => {
+    if (n === 0) return 'Zero';
+    const parts = [];
+    const crore = Math.floor(n / 10000000); n %= 10000000;
+    const lakh = Math.floor(n / 100000); n %= 100000;
+    const thousand = Math.floor(n / 1000); n %= 1000;
+    if (crore) parts.push(`${words(crore)} Crore`);
+    if (lakh) parts.push(`${two(lakh)} Lakh`);
+    if (thousand) parts.push(`${two(thousand)} Thousand`);
+    if (n) parts.push(three(n));
+    return parts.join(' ');
+  };
+  const total = dsRound(amount);
+  const rupees = Math.floor(total);
+  const paise = Math.round((total - rupees) * 100);
+  return `${words(rupees)} Rupees${paise ? ` and ${two(paise)} Paise` : ''} Only`;
+}
+
+async function downloadDirectSaleBillPdf(bill, company) {
+  const jsPDF = await loadJsPdf();
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const M = 14;
+  const GREEN = [27, 46, 29];
+  const LEAF_RGB = [47, 93, 52];
+  const GREY = [110, 110, 100];
+  const SOFT = [246, 243, 234];
+  const companyName = String(company?.name || COMPANY_NAME).toUpperCase();
+
+  // Heading
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...GREEN);
+  doc.setFontSize(18);
+  doc.text(companyName, pageW / 2, 18, { align: 'center' });
+  let y = 23;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...GREY);
+  if (company?.address) {
+    doc.splitTextToSize(String(company.address), pageW - M * 4).forEach((line) => { doc.text(line, pageW / 2, y, { align: 'center' }); y += 4.2; });
+  }
+  if (company?.fssai) { doc.text(`FSSAI: ${company.fssai}`, pageW / 2, y, { align: 'center' }); y += 4.2; }
+  y += 1;
+  doc.setFillColor(...GREEN);
+  doc.rect(M, y, pageW - M * 2, 8, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(255, 255, 255);
+  doc.text('BILL OF SUPPLY', pageW / 2, y + 5.5, { align: 'center' });
+  y += 13;
+
+  // Bill + customer boxes
+  const boxW = (pageW - M * 2 - 6) / 2;
+  const boxH = 26;
+  doc.setDrawColor(214, 209, 194);
+  doc.setFillColor(...SOFT);
+  doc.roundedRect(M, y, boxW, boxH, 1.5, 1.5, 'FD');
+  doc.roundedRect(M + boxW + 6, y, boxW, boxH, 1.5, 1.5, 'FD');
+  doc.setFontSize(8);
+  doc.setTextColor(...GREY);
+  doc.setFont('helvetica', 'bold');
+  doc.text('BILL TO', M + 4, y + 6);
+  doc.text('BILL DETAILS', M + boxW + 10, y + 6);
+  doc.setTextColor(...GREEN);
+  doc.setFontSize(11);
+  doc.text(String(bill.customer?.name || 'Walk-in customer'), M + 4, y + 12, { maxWidth: boxW - 8 });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  let cy = y + 17;
+  if (bill.customer?.phone) { doc.text(`Mobile: ${bill.customer.phone}`, M + 4, cy); cy += 4.5; }
+  if (bill.customer?.address) doc.text(doc.splitTextToSize(String(bill.customer.address), boxW - 8).slice(0, 2), M + 4, cy);
+  const rx = M + boxW + 10;
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`Bill No: ${bill.billNo}`, rx, y + 12);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Date: ${dsDate(bill.date)}`, rx, y + 17.5);
+  const st = DS_STATUS[dsStatus(bill)];
+  doc.text(`Status: ${st.label}`, rx, y + 23);
+  y += boxH + 6;
+
+  // Items
+  const body = (bill.rows || []).map((r, i) => [i + 1, r.name, String(r.qty), r.unit, dsMoneyPdf(r.rate).replace('Rs. ', ''), dsMoneyPdf(r.amount).replace('Rs. ', '')]);
+  doc.autoTable({
+    head: [['S.No', 'Item', 'Qty', 'Unit', 'Rate (Rs.)', 'Amount (Rs.)']],
+    body,
+    startY: y,
+    margin: { left: M, right: M, bottom: 20 },
+    theme: 'grid',
+    styles: { font: 'helvetica', fontSize: 9.5, cellPadding: 2, textColor: [30, 30, 28], lineColor: [214, 209, 194], lineWidth: 0.2, valign: 'middle' },
+    headStyles: { fillColor: GREEN, textColor: 255, fontStyle: 'bold', halign: 'center' },
+    alternateRowStyles: { fillColor: [251, 250, 246] },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 13 },
+      1: { halign: 'left', fontStyle: 'bold' },
+      2: { halign: 'center', cellWidth: 18 },
+      3: { halign: 'center', cellWidth: 18 },
+      4: { halign: 'right', cellWidth: 28 },
+      5: { halign: 'right', cellWidth: 32 },
+    },
+  });
+  y = doc.lastAutoTable.finalY + 4;
+
+  // Totals block (right) + amount in words (left)
+  const paid = dsPaid(bill);
+  const due = dsDue(bill);
+  const lines = [['Subtotal', dsMoneyPdf(bill.subtotal)]];
+  if (Number(bill.discount) > 0) lines.push(['Discount', `- ${dsMoneyPdf(bill.discount)}`]);
+  lines.push(['TOTAL', dsMoneyPdf(bill.total)]);
+  lines.push(['Paid', dsMoneyPdf(paid)]);
+  lines.push(['Balance Due', dsMoneyPdf(due)]);
+  const tW = 78;
+  const needed = lines.length * 7 + 30;
+  if (y + needed > pageH - 22) { doc.addPage(); y = 20; }
+  const tx = pageW - M - tW;
+  lines.forEach(([label, value], i) => {
+    const isTotal = label === 'TOTAL';
+    const rowY = y + i * 7;
+    if (isTotal) { doc.setFillColor(...GREEN); doc.rect(tx, rowY, tW, 7, 'F'); doc.setTextColor(255, 255, 255); }
+    else if (label === 'Balance Due' && due > 0) { doc.setFillColor(243, 231, 226); doc.rect(tx, rowY, tW, 7, 'F'); doc.setTextColor(192, 57, 43); }
+    else doc.setTextColor(...GREEN);
+    doc.setFont('helvetica', isTotal || label === 'Balance Due' ? 'bold' : 'normal');
+    doc.setFontSize(isTotal ? 11 : 10);
+    doc.text(label, tx + 3, rowY + 5);
+    doc.text(value, tx + tW - 3, rowY + 5, { align: 'right' });
+  });
+  doc.setTextColor(...GREEN);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.text('Amount in words:', M, y + 5);
+  doc.setFont('helvetica', 'normal');
+  doc.text(doc.splitTextToSize(dsAmountInWords(bill.total), tx - M - 6), M, y + 10);
+  const payModes = Array.from(new Set((bill.payments || []).map((p) => DS_PAY_LABEL[p.mode] || p.mode)));
+  doc.setFont('helvetica', 'bold');
+  doc.text('Payment:', M, y + 22);
+  doc.setFont('helvetica', 'normal');
+  doc.text(payModes.length ? payModes.join(', ') : 'Udhaar (credit)', M + 16, y + 22);
+  y += Math.max(lines.length * 7, 26) + 8;
+  if (bill.note) {
+    doc.setFont('helvetica', 'italic');
+    doc.setTextColor(...GREY);
+    doc.text(doc.splitTextToSize(`Note: ${bill.note}`, pageW - M * 2), M, y);
+    y += 8;
+  }
+
+  // Footer
+  const fy = Math.max(y + 18, pageH - 34);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(...GREY);
+  doc.text('Fresh fruits & vegetables: GST not applicable (exempt supply).', M, fy);
+  doc.setTextColor(...LEAF_RGB);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text('Thank you for your business!', M, fy + 6);
+  doc.setDrawColor(150, 150, 140);
+  doc.line(pageW - M - 60, fy + 10, pageW - M, fy + 10);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...GREEN);
+  doc.text(`For ${companyName}`, pageW - M, fy + 15, { align: 'right' });
+  doc.setFontSize(8);
+  doc.setTextColor(...GREY);
+  doc.text('Authorised Signatory', pageW - M, fy + 19.5, { align: 'right' });
+
+  doc.save(`${bill.billNo}_${String(bill.customer?.name || 'customer').replace(/[^A-Za-z0-9]+/g, '_')}.pdf`);
+}
+
+function useDsNarrow(breakpoint = 720) {
+  const [narrow, setNarrow] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < breakpoint : false));
+  useEffect(() => {
+    const on = () => setNarrow(window.innerWidth < breakpoint);
+    window.addEventListener('resize', on);
+    return () => window.removeEventListener('resize', on);
+  }, [breakpoint]);
+  return narrow;
+}
+
+const dsInput = { width: '100%', boxSizing: 'border-box', border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 14, background: '#fff', color: INK, fontFamily: 'inherit' };
+const dsLabel = { fontSize: 11, color: MUTED, fontWeight: 700, margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: 0.3 };
+const dsCard = { background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 16 };
+const dsBtn = (bg, fg, border) => ({ background: bg, color: fg, border: border || 'none', borderRadius: 8, padding: '9px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontFamily: 'inherit' });
+
+function DsStatusPill({ bill }) {
+  const st = DS_STATUS[dsStatus(bill)];
+  return <span style={{ background: st.bg, color: st.fg, fontSize: 11, fontWeight: 800, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st.label}</span>;
+}
+
+function DsStat({ label, value, color = INK, sub }) {
+  return (
+    <div style={{ ...dsCard, flex: '1 1 130px', boxSizing: 'border-box', padding: '12px 14px', minWidth: 0 }}>
+      <p style={{ ...dsLabel, margin: 0 }}>{label}</p>
+      <p style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, color }}>{value}</p>
+      {sub && <p style={{ margin: '2px 0 0', fontSize: 11, color: MUTED }}>{sub}</p>}
+    </div>
+  );
+}
+
+// Summary card also shown at the top of Sales → Overview.
+function DirectSaleSummary({ directSales, onOpen }) {
+  const today = dsToday();
+  const month = today.slice(0, 7);
+  const todayTotal = directSales.filter((b) => b.date === today).reduce((s, b) => s + (Number(b.total) || 0), 0);
+  const monthBills = directSales.filter((b) => String(b.date).startsWith(month));
+  const monthTotal = monthBills.reduce((s, b) => s + (Number(b.total) || 0), 0);
+  const received = directSales.reduce((s, b) => s + (b.payments || []).filter((p) => String(p.date).startsWith(month)).reduce((x, p) => x + (Number(p.amount) || 0), 0), 0);
+  const due = directSales.reduce((s, b) => s + dsDue(b), 0);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
+        <p style={{ margin: 0, fontWeight: 800, fontSize: 14, color: INK }}>Direct Sale</p>
+        {onOpen && <button onClick={onOpen} style={{ ...dsBtn('transparent', LEAF), padding: 0 }}>Open Direct Sale →</button>}
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <DsStat label="Today" value={dsMoney(todayTotal)} />
+        <DsStat label="This month" value={dsMoney(monthTotal)} sub={`${monthBills.length} bill${monthBills.length === 1 ? '' : 's'}`} />
+        <DsStat label="Received this month" value={dsMoney(received)} color={LEAF} />
+        <DsStat label="Udhaar baaki" value={dsMoney(due)} color={due > 0 ? TOMATO : INK} />
+      </div>
+    </div>
+  );
+}
+
+function DsBillForm({ items, directSales, allDirectSales, onSave, onCancel, saving }) {
+  const narrow = useDsNarrow();
+  const [date, setDate] = useState(dsToday());
+  const [customer, setCustomer] = useState({ name: '', phone: '', address: '' });
+  const [rows, setRows] = useState([{ id: dsNewId('R'), itemId: '', name: '', qty: '', unit: 'kg', rate: '' }]);
+  const [discount, setDiscount] = useState('');
+  const [payMode, setPayMode] = useState('cash');
+  const [received, setReceived] = useState('');
+  const [receivedTouched, setReceivedTouched] = useState(false);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState('');
+
+  // Past customers (by mobile, else by name) for auto-fill.
+  const customers = useMemo(() => {
+    const map = {};
+    [...directSales].sort((a, b) => String(a.date).localeCompare(String(b.date))).forEach((b) => {
+      if (!b.customer?.name) return;
+      map[dsCustomerKey(b.customer)] = b.customer;
+    });
+    return Object.values(map);
+  }, [directSales]);
+  const itemNames = useMemo(() => items.map((it) => it.name).filter(Boolean).sort((a, b) => a.localeCompare(b)), [items]);
+
+  const setRow = (id, patch) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const onItemName = (id, name) => {
+    const it = items.find((x) => String(x.name).toLowerCase() === String(name).trim().toLowerCase());
+    const unit = it && DS_UNITS.includes(String(it.uom || '').toLowerCase()) ? String(it.uom).toLowerCase() : undefined;
+    setRow(id, { name, itemId: it ? it.id : '', ...(unit ? { unit } : {}) });
+  };
+  const amountOf = (r) => dsRound((Number(r.qty) || 0) * (Number(r.rate) || 0));
+  const subtotal = dsRound(rows.reduce((s, r) => s + amountOf(r), 0));
+  const disc = Math.min(subtotal, Math.max(0, Number(discount) || 0));
+  const total = dsRound(subtotal - disc);
+  const receivedNum = payMode === 'credit' ? 0 : (receivedTouched ? Math.max(0, Number(received) || 0) : total);
+  const balance = dsRound(Math.max(0, total - receivedNum));
+
+  const pickCustomer = (name) => {
+    const found = customers.find((c) => String(c.name).toLowerCase() === String(name).trim().toLowerCase());
+    setCustomer(found ? { name: found.name, phone: found.phone || '', address: found.address || '' } : { ...customer, name });
+  };
+  const pickPhone = (phone) => {
+    const digits = String(phone).replace(/\D/g, '');
+    const found = digits.length >= 10 && customers.find((c) => String(c.phone || '').replace(/\D/g, '').slice(-10) === digits.slice(-10));
+    setCustomer(found ? { name: found.name, phone, address: found.address || '' } : { ...customer, phone });
+  };
+
+  const save = () => {
+    setError('');
+    const clean = rows.filter((r) => String(r.name).trim() || Number(r.qty) || Number(r.rate));
+    if (!customer.name.trim()) { setError('Customer ka naam likhiye.'); return; }
+    if (!clean.length) { setError('Kam se kam ek item jodiye.'); return; }
+    const bad = clean.find((r) => !String(r.name).trim() || !(Number(r.qty) > 0) || !(Number(r.rate) >= 0) || r.rate === '');
+    if (bad) { setError('Har item ka naam, quantity aur rate bhariye.'); return; }
+    if (receivedNum > total + 0.005) { setError('Received amount total se zyada nahi ho sakta.'); return; }
+    const seq = (allDirectSales || []).reduce((m, b) => Math.max(m, Number(b.seq) || 0), 0) + 1;
+    const id = dsNewId('DS');
+    const bill = {
+      id,
+      billNo: `DS-${String(seq).padStart(4, '0')}`,
+      seq,
+      date,
+      customer: { name: customer.name.trim(), phone: customer.phone.trim(), address: customer.address.trim() },
+      rows: clean.map((r) => ({ id: r.id, itemId: r.itemId || '', name: String(r.name).trim(), qty: Number(r.qty), unit: r.unit, rate: dsRound(r.rate), amount: amountOf(r) })),
+      subtotal,
+      discount: dsRound(disc),
+      total,
+      payments: receivedNum > 0 ? [{ id: dsNewId('P'), date, amount: dsRound(receivedNum), mode: payMode, note: 'At billing' }] : [],
+      note: note.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    onSave(bill);
+  };
+
+  const grid = narrow ? '1fr' : '1fr 1fr 1fr';
+  return (
+    <div>
+      <button onClick={onCancel} style={{ ...dsBtn('transparent', LEAF), padding: 0, marginBottom: 12 }}><ArrowLeft size={15} /> Back to bills</button>
+      <div style={{ ...dsCard, marginBottom: 12 }}>
+        <p style={{ margin: '0 0 12px', fontWeight: 800, fontSize: 15, color: INK }}>New bill</p>
+        <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '160px 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <p style={dsLabel}>Date</p>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value || dsToday())} style={dsInput} />
+          </div>
+        </div>
+        <p style={{ ...dsLabel, marginTop: 4 }}>Customer</p>
+        <div style={{ display: 'grid', gridTemplateColumns: grid, gap: 10 }}>
+          <input list="ds-customers" value={customer.name} onChange={(e) => pickCustomer(e.target.value)} placeholder="Customer name *" style={dsInput} />
+          <input value={customer.phone} onChange={(e) => pickPhone(e.target.value)} placeholder="Mobile number" inputMode="tel" style={dsInput} />
+          <input value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address (optional)" style={dsInput} />
+        </div>
+        <datalist id="ds-customers">{customers.map((c) => <option key={dsCustomerKey(c)} value={c.name}>{c.phone || ''}</option>)}</datalist>
+      </div>
+
+      <div style={{ ...dsCard, marginBottom: 12 }}>
+        <p style={{ margin: '0 0 10px', fontWeight: 800, fontSize: 15, color: INK }}>Items</p>
+        <datalist id="ds-items">{itemNames.map((n) => <option key={n} value={n} />)}</datalist>
+        {!narrow && (
+          <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr 90px 100px 100px 110px 32px', gap: 8, marginBottom: 6 }}>
+            {['#', 'Item', 'Qty', 'Unit', 'Rate ₹', 'Amount', ''].map((h) => <p key={h} style={{ ...dsLabel, margin: 0 }}>{h}</p>)}
+          </div>
+        )}
+        {rows.map((r, i) => (
+          narrow ? (
+            <div key={r.id} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, marginBottom: 8, background: '#FBFAF6' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: MUTED }}>{i + 1}.</span>
+                <input list="ds-items" value={r.name} onChange={(e) => onItemName(r.id, e.target.value)} placeholder="Item name" style={dsInput} />
+                {rows.length > 1 && <button onClick={() => setRows(rows.filter((x) => x.id !== r.id))} style={{ ...dsBtn('transparent', TOMATO), padding: 4 }} aria-label="Remove item"><Trash2 size={16} /></button>}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                <input value={r.qty} onChange={(e) => setRow(r.id, { qty: e.target.value })} placeholder="Qty" inputMode="decimal" style={dsInput} />
+                <select value={r.unit} onChange={(e) => setRow(r.id, { unit: e.target.value })} style={dsInput}>{DS_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}</select>
+                <input value={r.rate} onChange={(e) => setRow(r.id, { rate: e.target.value })} placeholder="Rate ₹" inputMode="decimal" style={dsInput} />
+              </div>
+              <p style={{ margin: '8px 0 0', fontSize: 13, fontWeight: 800, color: INK, textAlign: 'right' }}>{dsMoney(amountOf(r))}</p>
+            </div>
+          ) : (
+            <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '28px 1fr 90px 100px 100px 110px 32px', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: MUTED, textAlign: 'center' }}>{i + 1}</span>
+              <input list="ds-items" value={r.name} onChange={(e) => onItemName(r.id, e.target.value)} placeholder="Item name (type to search)" style={dsInput} />
+              <input value={r.qty} onChange={(e) => setRow(r.id, { qty: e.target.value })} placeholder="0" inputMode="decimal" style={dsInput} />
+              <select value={r.unit} onChange={(e) => setRow(r.id, { unit: e.target.value })} style={dsInput}>{DS_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}</select>
+              <input value={r.rate} onChange={(e) => setRow(r.id, { rate: e.target.value })} placeholder="0" inputMode="decimal" style={dsInput} />
+              <span style={{ fontSize: 14, fontWeight: 800, color: INK, textAlign: 'right' }}>{dsMoney(amountOf(r))}</span>
+              {rows.length > 1 ? <button onClick={() => setRows(rows.filter((x) => x.id !== r.id))} style={{ ...dsBtn('transparent', TOMATO), padding: 4 }} aria-label="Remove item"><Trash2 size={16} /></button> : <span />}
+            </div>
+          )
+        ))}
+        <button onClick={() => setRows([...rows, { id: dsNewId('R'), itemId: '', name: '', qty: '', unit: 'kg', rate: '' }])} style={{ ...dsBtn('#fff', LEAF, `1px dashed ${LEAF}`), marginTop: 4 }}>
+          <Plus size={15} /> Add item
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div style={dsCard}>
+          <p style={{ margin: '0 0 10px', fontWeight: 800, fontSize: 15, color: INK }}>Payment</p>
+          <p style={dsLabel}>Mode</p>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            {[...DS_PAY_MODES, { key: 'credit', label: 'Udhaar' }].map((m) => (
+              <button key={m.key} onClick={() => setPayMode(m.key)} style={{ ...dsBtn(payMode === m.key ? LEAF_DARK : '#fff', payMode === m.key ? '#fff' : INK, `1px solid ${payMode === m.key ? LEAF_DARK : LINE}`), padding: '7px 12px', borderRadius: 999, fontSize: 12 }}>{m.label}</button>
+            ))}
+          </div>
+          {payMode !== 'credit' && (
+            <>
+              <p style={dsLabel}>Amount received now (₹)</p>
+              <input value={receivedTouched ? received : String(total)} onChange={(e) => { setReceivedTouched(true); setReceived(e.target.value); }} inputMode="decimal" style={dsInput} />
+              <p style={{ margin: '6px 0 0', fontSize: 11, color: MUTED }}>Poora paisa nahi mila? Jitna mila utna likhiye — baaki udhaar mein jayega.</p>
+            </>
+          )}
+          <p style={{ ...dsLabel, marginTop: 10 }}>Note (optional)</p>
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. delivery by evening" style={dsInput} />
+        </div>
+        <div style={dsCard}>
+          <p style={{ margin: '0 0 10px', fontWeight: 800, fontSize: 15, color: INK }}>Total</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}><span style={{ color: MUTED }}>Subtotal</span><b>{dsMoney(subtotal)}</b></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ color: MUTED, fontSize: 14 }}>Discount (₹)</span>
+            <input value={discount} onChange={(e) => setDiscount(e.target.value)} placeholder="0" inputMode="decimal" style={{ ...dsInput, width: 110, textAlign: 'right' }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 800, color: INK, borderTop: `1px solid ${LINE}`, paddingTop: 8, marginBottom: 8 }}><span>Total</span><span>{dsMoney(total)}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 4 }}><span style={{ color: MUTED }}>Received</span><b style={{ color: LEAF }}>{dsMoney(receivedNum)}</b></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14 }}><span style={{ color: MUTED }}>Udhaar (baaki)</span><b style={{ color: balance > 0 ? TOMATO : INK }}>{dsMoney(balance)}</b></div>
+        </div>
+      </div>
+
+      {error && <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 700, color: TOMATO }}>{error}</p>}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button disabled={saving} onClick={save} style={{ ...dsBtn(LEAF, '#fff'), padding: '11px 20px', fontSize: 14, opacity: saving ? 0.6 : 1, flex: narrow ? 1 : 'none' }}>{saving ? 'Saving…' : 'Save bill'}</button>
+        <button onClick={onCancel} style={dsBtn('#fff', INK, `1px solid ${LINE}`)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function DsBillDetail({ bill, company, onBack, onSave, onDelete }) {
+  const narrow = useDsNarrow();
+  const [amount, setAmount] = useState('');
+  const [mode, setMode] = useState('cash');
+  const [payDate, setPayDate] = useState(dsToday());
+  const [msg, setMsg] = useState('');
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const due = dsDue(bill);
+  const paid = dsPaid(bill);
+
+  const receive = () => {
+    setMsg('');
+    const amt = dsRound(amount);
+    if (!(amt > 0)) { setMsg('Amount likhiye.'); return; }
+    if (amt > due + 0.005) { setMsg(`Baaki sirf ${dsMoney(due)} hai.`); return; }
+    onSave({ ...bill, payments: [...(bill.payments || []), { id: dsNewId('P'), date: payDate, amount: amt, mode, note: '' }] });
+    setAmount('');
+    setMsg('Payment jud gaya.');
+  };
+  const removePayment = (pid) => onSave({ ...bill, payments: (bill.payments || []).filter((p) => p.id !== pid) });
+  const pdf = async () => {
+    setPdfBusy(true);
+    setMsg('');
+    try { await downloadDirectSaleBillPdf(bill, company); } catch (e) { setMsg('PDF nahi ban paya. Internet check karke dobara try kariye.'); }
+    setPdfBusy(false);
+  };
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ ...dsBtn('transparent', LEAF), padding: 0, marginBottom: 12 }}><ArrowLeft size={15} /> Back to bills</button>
+      <div style={{ ...dsCard, marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div>
+            <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: INK }}>{bill.billNo}</p>
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: MUTED }}>{dsDate(bill.date)}</p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <DsStatusPill bill={bill} />
+            <button disabled={pdfBusy} onClick={pdf} style={dsBtn(LEAF, '#fff')}><Download size={15} /> {pdfBusy ? 'Preparing…' : 'Download PDF'}</button>
+          </div>
+        </div>
+        <div style={{ marginTop: 12, padding: '10px 12px', background: '#FBFAF6', borderRadius: 8, border: `1px solid ${LINE}` }}>
+          <p style={{ margin: 0, fontWeight: 800, fontSize: 14, color: INK }}>{bill.customer?.name}</p>
+          {bill.customer?.phone && <p style={{ margin: '2px 0 0', fontSize: 12, color: MUTED }}>📞 {bill.customer.phone}</p>}
+          {bill.customer?.address && <p style={{ margin: '2px 0 0', fontSize: 12, color: MUTED }}>{bill.customer.address}</p>}
+        </div>
+        <div style={{ overflowX: 'auto', marginTop: 12 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: narrow ? 420 : 0 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: MUTED, fontSize: 11, textTransform: 'uppercase' }}>
+                <th style={{ padding: '6px 4px' }}>#</th><th style={{ padding: '6px 4px' }}>Item</th><th style={{ padding: '6px 4px', textAlign: 'right' }}>Qty</th><th style={{ padding: '6px 4px', textAlign: 'right' }}>Rate</th><th style={{ padding: '6px 4px', textAlign: 'right' }}>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(bill.rows || []).map((r, i) => (
+                <tr key={r.id || i} style={{ borderTop: `1px solid ${LINE}` }}>
+                  <td style={{ padding: '7px 4px', color: MUTED }}>{i + 1}</td>
+                  <td style={{ padding: '7px 4px', fontWeight: 700, color: INK }}>{r.name}</td>
+                  <td style={{ padding: '7px 4px', textAlign: 'right' }}>{r.qty} {r.unit}</td>
+                  <td style={{ padding: '7px 4px', textAlign: 'right' }}>{dsMoney(r.rate)}</td>
+                  <td style={{ padding: '7px 4px', textAlign: 'right', fontWeight: 700 }}>{dsMoney(r.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ marginLeft: 'auto', maxWidth: 280, marginTop: 10, fontSize: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}><span style={{ color: MUTED }}>Subtotal</span><span>{dsMoney(bill.subtotal)}</span></div>
+          {Number(bill.discount) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}><span style={{ color: MUTED }}>Discount</span><span>− {dsMoney(bill.discount)}</span></div>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderTop: `1px solid ${LINE}`, fontWeight: 800, fontSize: 16 }}><span>Total</span><span>{dsMoney(bill.total)}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}><span style={{ color: MUTED }}>Paid</span><b style={{ color: LEAF }}>{dsMoney(paid)}</b></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}><span style={{ color: MUTED }}>Udhaar baaki</span><b style={{ color: due > 0 ? TOMATO : INK }}>{dsMoney(due)}</b></div>
+        </div>
+        {bill.note && <p style={{ margin: '10px 0 0', fontSize: 12, color: MUTED }}>Note: {bill.note}</p>}
+      </div>
+
+      <div style={{ ...dsCard, marginBottom: 12 }}>
+        <p style={{ margin: '0 0 10px', fontWeight: 800, fontSize: 15, color: INK }}>Payments</p>
+        {(bill.payments || []).length === 0 && <p style={{ margin: '0 0 10px', fontSize: 13, color: MUTED }}>Abhi koi payment nahi aaya.</p>}
+        {(bill.payments || []).map((p) => (
+          <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderTop: `1px solid ${LINE}`, fontSize: 13 }}>
+            <span>{dsDate(p.date)} · {DS_PAY_LABEL[p.mode] || p.mode}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <b style={{ color: LEAF }}>{dsMoney(p.amount)}</b>
+              <button onClick={() => removePayment(p.id)} title="Remove this payment" style={{ ...dsBtn('transparent', TOMATO), padding: 2 }}><Trash2 size={14} /></button>
+            </span>
+          </div>
+        ))}
+        {due > 0 && (
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px dashed ${LINE}` }}>
+            <p style={{ margin: '0 0 8px', fontWeight: 700, fontSize: 13, color: INK }}>Receive payment (baaki {dsMoney(due)})</p>
+            <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr 1fr' : '140px 150px 160px auto', gap: 8, alignItems: 'center' }}>
+              <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount ₹" inputMode="decimal" style={dsInput} />
+              <select value={mode} onChange={(e) => setMode(e.target.value)} style={dsInput}>{DS_PAY_MODES.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}</select>
+              <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value || dsToday())} style={dsInput} />
+              <button onClick={receive} style={dsBtn(LEAF, '#fff')}>Add payment</button>
+            </div>
+            <button onClick={() => setAmount(String(due))} style={{ ...dsBtn('transparent', LEAF), padding: 0, marginTop: 6, fontSize: 12 }}>Poora baaki ({dsMoney(due)}) bharein</button>
+          </div>
+        )}
+        {msg && <p style={{ margin: '8px 0 0', fontSize: 12, fontWeight: 700, color: msg.includes('jud') ? LEAF : TOMATO }}>{msg}</p>}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        {!confirmDelete ? (
+          <button onClick={() => setConfirmDelete(true)} style={dsBtn('#fff', TOMATO, `1px solid ${TOMATO}`)}><Trash2 size={14} /> Delete bill</button>
+        ) : (
+          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: TOMATO }}>Pakka delete karein?</span>
+            <button onClick={() => onDelete(bill.id)} style={dsBtn(TOMATO, '#fff')}>Yes, delete</button>
+            <button onClick={() => setConfirmDelete(false)} style={dsBtn('#fff', INK, `1px solid ${LINE}`)}>No</button>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DirectSaleTab({ directSales, allDirectSales, items, company, onSave, onDelete }) {
+  const narrow = useDsNarrow();
+  const [view, setView] = useState('list'); // 'list' | 'new' | 'bill'
+  const [openId, setOpenId] = useState(null);
+  const [tab, setTab] = useState('bills'); // 'bills' | 'customers'
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('all');
+  const [month, setMonth] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  const sorted = useMemo(() => [...directSales].sort((a, b) => String(b.date).localeCompare(String(a.date)) || (Number(b.seq) || 0) - (Number(a.seq) || 0)), [directSales]);
+  const q = search.trim().toLowerCase();
+  const bills = sorted.filter((b) => {
+    if (status !== 'all' && dsStatus(b) !== status) return false;
+    if (month && !String(b.date).startsWith(month)) return false;
+    if (!q) return true;
+    return [b.billNo, b.customer?.name, b.customer?.phone].some((v) => String(v || '').toLowerCase().includes(q));
+  });
+
+  const customers = useMemo(() => {
+    const map = {};
+    sorted.forEach((b) => {
+      const k = dsCustomerKey(b.customer);
+      if (!map[k]) map[k] = { key: k, name: b.customer?.name || '', phone: b.customer?.phone || '', bills: 0, total: 0, paid: 0, due: 0, last: b.date };
+      const c = map[k];
+      c.bills += 1;
+      c.total = dsRound(c.total + (Number(b.total) || 0));
+      c.paid = dsRound(c.paid + dsPaid(b));
+      c.due = dsRound(c.due + dsDue(b));
+    });
+    return Object.values(map).sort((a, b) => b.due - a.due || b.total - a.total);
+  }, [sorted]);
+
+  const doSave = async (bill, openAfter) => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      await onSave(bill);
+      if (openAfter) { setOpenId(bill.id); setView('bill'); }
+    } catch (e) {
+      setSaveError('Bill save nahi hua. Internet check karke dobara try kariye.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openBill = openId ? directSales.find((b) => b.id === openId) : null;
+  if (view === 'new') {
+    return (
+      <div>
+        {saveError && <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 700, color: TOMATO }}>{saveError}</p>}
+        <DsBillForm items={items} directSales={directSales} allDirectSales={allDirectSales} saving={saving} onCancel={() => setView('list')} onSave={(b) => doSave(b, true)} />
+      </div>
+    );
+  }
+  if (view === 'bill' && openBill) {
+    return (
+      <DsBillDetail
+        bill={openBill}
+        company={company}
+        onBack={() => { setView('list'); setOpenId(null); }}
+        onSave={(b) => doSave(b, false)}
+        onDelete={async (id) => { await onDelete(id); setView('list'); setOpenId(null); }}
+      />
+    );
+  }
+
+  const chip = (active) => ({ ...dsBtn(active ? LEAF_DARK : '#fff', active ? '#fff' : INK, `1px solid ${active ? LEAF_DARK : LINE}`), padding: '6px 12px', borderRadius: 999, fontSize: 12 });
+  return (
+    <div>
+      <DirectSaleSummary directSales={directSales} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setTab('bills')} style={chip(tab === 'bills')}>Bills ({directSales.length})</button>
+          <button onClick={() => setTab('customers')} style={chip(tab === 'customers')}>Customers & Udhaar</button>
+        </div>
+        <button onClick={() => setView('new')} style={{ ...dsBtn(LEAF, '#fff'), padding: '10px 18px', fontSize: 14, flex: narrow ? '1 1 100%' : 'none' }}><Plus size={16} /> New Bill</button>
+      </div>
+
+      {tab === 'bills' && (
+        <div style={dsCard}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr 1fr' : '1fr 160px 170px', gap: 8, marginBottom: 12 }}>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name / mobile / bill no" style={{ ...dsInput, gridColumn: narrow ? '1 / -1' : 'auto' }} />
+            <select value={status} onChange={(e) => setStatus(e.target.value)} style={dsInput}>
+              <option value="all">All status</option><option value="paid">Paid</option><option value="partial">Partial</option><option value="credit">Udhaar</option>
+            </select>
+            <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={dsInput} title="Filter by month" />
+          </div>
+          {bills.length === 0 && <p style={{ textAlign: 'center', color: MUTED, fontSize: 13, padding: '18px 0', margin: 0 }}>{directSales.length ? 'Is filter mein koi bill nahi.' : 'Abhi koi bill nahi. "New Bill" dabakar pehla bill banaiye.'}</p>}
+          {bills.map((b) => (
+            <button key={b.id} onClick={() => { setOpenId(b.id); setView('bill'); }} style={{ display: 'flex', width: '100%', textAlign: 'left', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: '#fff', border: 'none', borderTop: `1px solid ${LINE}`, padding: '11px 4px', cursor: 'pointer', fontFamily: 'inherit' }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontWeight: 800, fontSize: 14, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.customer?.name || 'Customer'}</p>
+                <p style={{ margin: '2px 0 0', fontSize: 12, color: MUTED }}>{b.billNo} · {dsDate(b.date)}{b.customer?.phone ? ` · ${b.customer.phone}` : ''}</p>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <p style={{ margin: 0, fontWeight: 800, fontSize: 14, color: INK }}>{dsMoney(b.total)}</p>
+                <div style={{ marginTop: 3, display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  {dsDue(b) > 0 && <span style={{ fontSize: 11, color: TOMATO, fontWeight: 700 }}>baaki {dsMoney(dsDue(b))}</span>}
+                  <DsStatusPill bill={b} />
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'customers' && (
+        <div style={dsCard}>
+          {customers.length === 0 && <p style={{ textAlign: 'center', color: MUTED, fontSize: 13, padding: '18px 0', margin: 0 }}>Abhi koi customer nahi.</p>}
+          {customers.map((c) => (
+            <button key={c.key} onClick={() => { setTab('bills'); setSearch(c.phone || c.name); setStatus('all'); setMonth(''); }} style={{ display: 'flex', width: '100%', textAlign: 'left', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: '#fff', border: 'none', borderTop: `1px solid ${LINE}`, padding: '11px 4px', cursor: 'pointer', fontFamily: 'inherit' }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontWeight: 800, fontSize: 14, color: INK }}>{c.name}</p>
+                <p style={{ margin: '2px 0 0', fontSize: 12, color: MUTED }}>{c.phone ? `${c.phone} · ` : ''}{c.bills} bill{c.bills === 1 ? '' : 's'} · total {dsMoney(c.total)}</p>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <p style={{ margin: 0, fontSize: 11, color: MUTED }}>Udhaar baaki</p>
+                <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: c.due > 0 ? TOMATO : LEAF }}>{dsMoney(c.due)}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SalesTabMobile({ directSales = [], allDirectSales = [], onSaveDirectSale, onDeleteDirectSale, items, allItems, recipes, plSnapshots, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
   const [view, setView] = useState('overview');
   const [openBatchId, setOpenBatchId] = useState(null);
   const configByKey = useMemo(() => { const m = {}; pricingConfig.forEach((x) => { m[x.id] = x; }); return m; }, [pricingConfig]);
@@ -5624,7 +6338,10 @@ function SalesTabMobile({ items, allItems, recipes, plSnapshots, orders, purchas
         <Chip label="Indents & P&L" active={view === 'batches'} onClick={() => setView('batches')} />
         <Chip label="Invoices" active={view === 'invoices'} onClick={() => setView('invoices')} />
         <Chip label="Payments" active={view === 'payments'} onClick={() => setView('payments')} />
+        <Chip label="Direct Sale" active={view === 'direct'} onClick={() => setView('direct')} />
       </div>
+      {view === 'overview' && <DirectSaleSummary directSales={directSales} onOpen={() => setView('direct')} />}
+      {view === 'direct' && <DirectSaleTab directSales={directSales} allDirectSales={allDirectSales} items={items} company={null} onSave={onSaveDirectSale} onDelete={onDeleteDirectSale} />}
       {view === 'overview' && <SalesOverviewMobile batchFinancials={batchFinancials} grnReports={grnReports} salesInvoices={salesInvoices} salesPayments={salesPayments} />}
       {view === 'batches' && <SalesBatchesMobile batchFinancials={batchFinancials} onOpen={setOpenBatchId} />}
       {view === 'invoices' && <SalesInvoicesMobile batchFinancials={batchFinancials} salesInvoices={salesInvoices} salesPayments={salesPayments} onSaveInvoice={onSaveInvoice} onDeleteInvoice={onDeleteInvoice} />}
