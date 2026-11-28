@@ -480,7 +480,8 @@ export default function FnvMobilePreview() {
   const [gradingRecords, setGradingRecords] = useState([]); // per-item quality grading entries (Grade A / Grade B / Dump split)
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [salesPayments, setSalesPayments] = useState([]);
-  const [directSales, setDirectSales] = useState([]); // Direct Sale bills (walk-in / other customers)
+  const [directSales, setDirectSales] = useState([]);
+  const [directSaleCustomers, setDirectSaleCustomers] = useState([]); // saved Direct Sale customers (for the bill form dropdown) // Direct Sale bills (walk-in / other customers)
   const [staff, setStaff] = useState([]);
   const [staffAdvances, setStaffAdvances] = useState([]);
   const [staffAttendance, setStaffAttendance] = useState([]);
@@ -565,8 +566,13 @@ export default function FnvMobilePreview() {
       (snap) => setDirectSales(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
       () => setDirectSales([])
     );
+    const unsubDsc = onSnapshot(
+      collection(db, 'directSaleCustomers'),
+      (snap) => setDirectSaleCustomers(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
+      () => setDirectSaleCustomers([])
+    );
 
-    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); unsub5(); unsubDs(); };
+    return () => { unsubs.forEach((u) => u()); unsub2(); unsub3(); unsub4(); unsub5(); unsubDs(); unsubDsc(); };
   }, []);
 
   // ── Session — restore a saved login once the users list has loaded ──
@@ -967,6 +973,15 @@ export default function FnvMobilePreview() {
   const saveSalesInvoice = (invoice) => fbSetDoc('salesInvoices', invoice.id, { ...invoice, city: effectiveCity });
   const saveDirectSale = (bill) => fbSetDoc('directSales', bill.id, { ...bill, city: bill.city || effectiveCity });
   const deleteDirectSale = (id) => fbDelete('directSales', id);
+  // Direct Sale customers are remembered on their own (one doc per mobile
+  // number, else per name) so the bill form's dropdown keeps them.
+  const saveDirectSaleCustomer = (c) => {
+    const key = dsCustomerKey(c).replace(/[^A-Za-z0-9]+/g, '_').slice(0, 120) || `c_${Date.now()}`;
+    return fbSetDoc('directSaleCustomers', `${effectiveCity}_${key}`.replace(/[^A-Za-z0-9_]+/g, '_'), {
+      name: String(c.name || '').trim(), phone: String(c.phone || '').trim(), address: String(c.address || '').trim(),
+      city: effectiveCity, updatedAt: new Date().toISOString(),
+    });
+  };
   const deleteSalesInvoice = (id) => fbDelete('salesInvoices', id);
   const saveSalesPayment = (payment) => fbSetDoc('salesPayments', payment.id, { ...payment, city: effectiveCity });
   const deleteSalesPayment = (id) => fbDelete('salesPayments', id);
@@ -1113,6 +1128,8 @@ export default function FnvMobilePreview() {
             <SalesTabMobile
               directSales={directSales.filter((b) => (b.city || CITIES[0]) === effectiveCity)}
               allDirectSales={directSales}
+              directSaleCustomers={directSaleCustomers.filter((c) => (c.city || CITIES[0]) === effectiveCity)}
+              onSaveDirectSaleCustomer={saveDirectSaleCustomer}
               onSaveDirectSale={saveDirectSale}
               onDeleteDirectSale={deleteDirectSale}
               items={cityItems}
@@ -5955,7 +5972,63 @@ function DirectSaleSummary({ directSales, onOpen }) {
   );
 }
 
-function DsBillForm({ items, directSales, allDirectSales, onSave, onCancel, saving }) {
+// Saved-customer picker: a tap-to-open list with search. A plain HTML
+// <datalist> was used before, but phone browsers don't show its suggestions
+// reliably, so this is a real list that works the same everywhere.
+function DsCustomerPicker({ customers, selectedKey, onPick, onNew }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const query = q.trim().toLowerCase();
+  const list = customers.filter((c) => !query || String(c.name).toLowerCase().includes(query) || String(c.phone || '').includes(query));
+  const selected = customers.find((c) => dsCustomerKey(c) === selectedKey);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <button
+        type="button"
+        onClick={() => { setOpen(!open); setQ(''); }}
+        style={{ ...dsInput, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', textAlign: 'left', borderColor: open ? LEAF : LINE }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: selected ? INK : MUTED, fontWeight: selected ? 700 : 400 }}>
+          {selected ? `${selected.name}${selected.phone ? ` · ${selected.phone}` : ''}` : (customers.length ? `Saved customer chuniye (${customers.length})` : 'Abhi koi saved customer nahi')}
+        </span>
+        <ChevronRight size={16} color={MUTED} style={{ transform: open ? 'rotate(-90deg)' : 'rotate(90deg)', flexShrink: 0 }} />
+      </button>
+      {open && (
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, marginTop: 6, background: '#fff', overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.08)' }}>
+          <div style={{ padding: 8, borderBottom: `1px solid ${LINE}` }}>
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Naam ya mobile se dhoondhiye" style={dsInput} />
+          </div>
+          <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+            <button
+              type="button"
+              onClick={() => { onNew(); setOpen(false); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', background: '#F6F3EA', border: 'none', borderBottom: `1px solid ${LINE}`, padding: '11px 12px', fontSize: 13, fontWeight: 800, color: LEAF, cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              <Plus size={14} /> Naya customer
+            </button>
+            {list.map((c) => {
+              const k = dsCustomerKey(c);
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => { onPick(c); setOpen(false); }}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: k === selectedKey ? '#EAF3DE' : '#fff', border: 'none', borderBottom: `1px solid ${LINE}`, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
+                >
+                  <span style={{ display: 'block', fontSize: 14, fontWeight: 700, color: INK }}>{c.name}</span>
+                  <span style={{ display: 'block', fontSize: 12, color: MUTED }}>{[c.phone, c.address].filter(Boolean).join(' · ') || '—'}</span>
+                </button>
+              );
+            })}
+            {list.length === 0 && <p style={{ margin: 0, padding: '12px', fontSize: 12, color: MUTED }}>Koi customer nahi mila.</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DsBillForm({ items, directSales, allDirectSales, savedCustomers = [], onSave, onCancel, saving }) {
   const narrow = useDsNarrow();
   const [date, setDate] = useState(dsToday());
   const [customer, setCustomer] = useState({ name: '', phone: '', address: '' });
@@ -5967,15 +6040,21 @@ function DsBillForm({ items, directSales, allDirectSales, onSave, onCancel, savi
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
 
-  // Past customers (by mobile, else by name) for auto-fill.
+  // Saved customers (kept even if their bills are deleted) plus anyone on a
+  // past bill, de-duplicated by mobile (else name); the saved record wins.
   const customers = useMemo(() => {
     const map = {};
     [...directSales].sort((a, b) => String(a.date).localeCompare(String(b.date))).forEach((b) => {
       if (!b.customer?.name) return;
-      map[dsCustomerKey(b.customer)] = b.customer;
+      map[dsCustomerKey(b.customer)] = { name: b.customer.name, phone: b.customer.phone || '', address: b.customer.address || '' };
     });
-    return Object.values(map);
-  }, [directSales]);
+    savedCustomers.forEach((c) => {
+      if (!c?.name) return;
+      map[dsCustomerKey(c)] = { name: c.name, phone: c.phone || '', address: c.address || '' };
+    });
+    return Object.values(map).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }, [directSales, savedCustomers]);
+  const [pickedKey, setPickedKey] = useState('');
   const itemNames = useMemo(() => items.map((it) => it.name).filter(Boolean).sort((a, b) => a.localeCompare(b)), [items]);
 
   const setRow = (id, patch) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -5993,11 +6072,13 @@ function DsBillForm({ items, directSales, allDirectSales, onSave, onCancel, savi
 
   const pickCustomer = (name) => {
     const found = customers.find((c) => String(c.name).toLowerCase() === String(name).trim().toLowerCase());
+    if (found) setPickedKey(dsCustomerKey(found));
     setCustomer(found ? { name: found.name, phone: found.phone || '', address: found.address || '' } : { ...customer, name });
   };
   const pickPhone = (phone) => {
     const digits = String(phone).replace(/\D/g, '');
     const found = digits.length >= 10 && customers.find((c) => String(c.phone || '').replace(/\D/g, '').slice(-10) === digits.slice(-10));
+    if (found) setPickedKey(dsCustomerKey(found));
     setCustomer(found ? { name: found.name, phone, address: found.address || '' } : { ...customer, phone });
   };
 
@@ -6041,12 +6122,17 @@ function DsBillForm({ items, directSales, allDirectSales, onSave, onCancel, savi
           </div>
         </div>
         <p style={{ ...dsLabel, marginTop: 4 }}>Customer</p>
+        <DsCustomerPicker
+          customers={customers}
+          selectedKey={pickedKey}
+          onPick={(c) => { setPickedKey(dsCustomerKey(c)); setCustomer({ name: c.name, phone: c.phone || '', address: c.address || '' }); }}
+          onNew={() => { setPickedKey(''); setCustomer({ name: '', phone: '', address: '' }); }}
+        />
         <div style={{ display: 'grid', gridTemplateColumns: grid, gap: 10 }}>
-          <input list="ds-customers" value={customer.name} onChange={(e) => pickCustomer(e.target.value)} placeholder="Customer name *" style={dsInput} />
+          <input value={customer.name} onChange={(e) => pickCustomer(e.target.value)} placeholder="Customer name *" style={dsInput} />
           <input value={customer.phone} onChange={(e) => pickPhone(e.target.value)} placeholder="Mobile number" inputMode="tel" style={dsInput} />
           <input value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address (optional)" style={dsInput} />
         </div>
-        <datalist id="ds-customers">{customers.map((c) => <option key={dsCustomerKey(c)} value={c.name}>{c.phone || ''}</option>)}</datalist>
       </div>
 
       <div style={{ ...dsCard, marginBottom: 12 }}>
@@ -6249,7 +6335,7 @@ function DsBillDetail({ bill, company, onBack, onSave, onDelete }) {
   );
 }
 
-function DirectSaleTab({ directSales, allDirectSales, items, company, onSave, onDelete }) {
+function DirectSaleTab({ directSales, allDirectSales, savedCustomers = [], items, company, onSave, onDelete, onSaveCustomer }) {
   const narrow = useDsNarrow();
   const [view, setView] = useState('list'); // 'list' | 'new' | 'bill'
   const [openId, setOpenId] = useState(null);
@@ -6280,14 +6366,22 @@ function DirectSaleTab({ directSales, allDirectSales, items, company, onSave, on
       c.paid = dsRound(c.paid + dsPaid(b));
       c.due = dsRound(c.due + dsDue(b));
     });
-    return Object.values(map).sort((a, b) => b.due - a.due || b.total - a.total);
-  }, [sorted]);
+    savedCustomers.forEach((sc) => {
+      const k = dsCustomerKey(sc);
+      if (sc?.name && !map[k]) map[k] = { key: k, name: sc.name, phone: sc.phone || '', bills: 0, total: 0, paid: 0, due: 0, last: '' };
+    });
+    return Object.values(map).sort((a, b) => b.due - a.due || b.total - a.total || String(a.name).localeCompare(String(b.name)));
+  }, [sorted, savedCustomers]);
 
   const doSave = async (bill, openAfter) => {
     setSaving(true);
     setSaveError('');
     try {
       await onSave(bill);
+      // A new bill also remembers its customer for the dropdown next time.
+      if (openAfter && onSaveCustomer && bill.customer?.name) {
+        Promise.resolve(onSaveCustomer(bill.customer)).catch(() => {});
+      }
       if (openAfter) { setOpenId(bill.id); setView('bill'); }
     } catch (e) {
       setSaveError('Bill save nahi hua. Internet check karke dobara try kariye.');
@@ -6301,7 +6395,7 @@ function DirectSaleTab({ directSales, allDirectSales, items, company, onSave, on
     return (
       <div>
         {saveError && <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 700, color: TOMATO }}>{saveError}</p>}
-        <DsBillForm items={items} directSales={directSales} allDirectSales={allDirectSales} saving={saving} onCancel={() => setView('list')} onSave={(b) => doSave(b, true)} />
+        <DsBillForm items={items} directSales={directSales} allDirectSales={allDirectSales} savedCustomers={savedCustomers} saving={saving} onCancel={() => setView('list')} onSave={(b) => doSave(b, true)} />
       </div>
     );
   }
@@ -6378,7 +6472,7 @@ function DirectSaleTab({ directSales, allDirectSales, items, company, onSave, on
   );
 }
 
-function SalesTabMobile({ directSales = [], allDirectSales = [], onSaveDirectSale, onDeleteDirectSale, items, allItems, recipes, plSnapshots, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
+function SalesTabMobile({ directSales = [], allDirectSales = [], directSaleCustomers = [], onSaveDirectSaleCustomer, onSaveDirectSale, onDeleteDirectSale, items, allItems, recipes, plSnapshots, orders, purchases, pricingConfig, grnReports, indentBatches, salesInvoices, salesPayments, city, onUploadGrn, onUpdateIndentBatch, onSaveInvoice, onDeleteInvoice, onSavePayment, onDeletePayment }) {
   const [view, setView] = useState('overview');
   const [openBatchId, setOpenBatchId] = useState(null);
   const configByKey = useMemo(() => { const m = {}; pricingConfig.forEach((x) => { m[x.id] = x; }); return m; }, [pricingConfig]);
@@ -6442,7 +6536,7 @@ function SalesTabMobile({ directSales = [], allDirectSales = [], onSaveDirectSal
         <Chip label="Direct Sale" active={view === 'direct'} onClick={() => setView('direct')} />
       </div>
       {view === 'overview' && <DirectSaleSummary directSales={directSales} onOpen={() => setView('direct')} />}
-      {view === 'direct' && <DirectSaleTab directSales={directSales} allDirectSales={allDirectSales} items={items} company={null} onSave={onSaveDirectSale} onDelete={onDeleteDirectSale} />}
+      {view === 'direct' && <DirectSaleTab directSales={directSales} allDirectSales={allDirectSales} savedCustomers={directSaleCustomers} onSaveCustomer={onSaveDirectSaleCustomer} items={items} company={null} onSave={onSaveDirectSale} onDelete={onDeleteDirectSale} />}
       {view === 'overview' && <SalesOverviewMobile batchFinancials={batchFinancials} grnReports={grnReports} salesInvoices={salesInvoices} salesPayments={salesPayments} />}
       {view === 'batches' && <SalesBatchesMobile batchFinancials={batchFinancials} onOpen={setOpenBatchId} />}
       {view === 'invoices' && <SalesInvoicesMobile batchFinancials={batchFinancials} salesInvoices={salesInvoices} salesPayments={salesPayments} onSaveInvoice={onSaveInvoice} onDeleteInvoice={onDeleteInvoice} />}
