@@ -5660,20 +5660,25 @@ async function downloadDirectSaleBillPdf(bill, company) {
   const SOFT = [246, 243, 234];
   const companyName = String(company?.name || COMPANY_NAME).toUpperCase();
 
-  // Heading
+  // Heading: Nilgiri logo (same as the login screen) on the left, company
+  // name + address beside it.
+  const logoSize = 26;
+  const top = 10;
+  try { doc.addImage(LOGO_DATA_URI, 'PNG', M, top, logoSize, logoSize); } catch (e) { /* print without logo */ }
+  const hx = M + logoSize + 6;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...GREEN);
   doc.setFontSize(18);
-  doc.text(companyName, pageW / 2, 18, { align: 'center' });
-  let y = 23;
+  doc.text(companyName, hx, top + 10, { maxWidth: pageW - hx - M });
+  let y = top + 16;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(...GREY);
   if (company?.address) {
-    doc.splitTextToSize(String(company.address), pageW - M * 4).forEach((line) => { doc.text(line, pageW / 2, y, { align: 'center' }); y += 4.2; });
+    doc.splitTextToSize(String(company.address), pageW - hx - M).slice(0, 2).forEach((line) => { doc.text(line, hx, y); y += 4.2; });
   }
-  if (company?.fssai) { doc.text(`FSSAI: ${company.fssai}`, pageW / 2, y, { align: 'center' }); y += 4.2; }
-  y += 1;
+  if (company?.fssai) { doc.text(`FSSAI: ${company.fssai}`, hx, y); y += 4.2; }
+  y = Math.max(y, top + logoSize) + 3;
   doc.setFillColor(...GREEN);
   doc.rect(M, y, pageW - M * 2, 8, 'F');
   doc.setFont('helvetica', 'bold');
