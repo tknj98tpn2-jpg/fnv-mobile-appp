@@ -5653,81 +5653,142 @@ async function downloadDirectSaleBillPdf(bill, company) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
-  const M = 14;
   const GREEN = [27, 46, 29];
   const LEAF_RGB = [47, 93, 52];
-  const GREY = [110, 110, 100];
-  const SOFT = [246, 243, 234];
+  const TINT = [234, 243, 222];
+  const SOFT = [248, 246, 239];
+  const RULE = [47, 93, 52];
+  const GREY = [105, 105, 95];
+  const RED = [192, 57, 43];
   const companyName = String(company?.name || COMPANY_NAME).toUpperCase();
 
-  // Heading: Nilgiri logo (same as the login screen) on the left, company
-  // name + address beside it.
-  const logoSize = 26;
-  const top = 10;
-  try { doc.addImage(LOGO_DATA_URI, 'PNG', M, top, logoSize, logoSize); } catch (e) { /* print without logo */ }
-  const hx = M + logoSize + 6;
+  // Frame: everything sits inside a double border.
+  const F = 8;                 // outer frame inset
+  const X = F + 4;             // content left
+  const W = pageW - X * 2;     // content width
+  const drawFrame = () => {
+    doc.setDrawColor(...GREEN);
+    doc.setLineWidth(0.9);
+    doc.rect(F, F, pageW - F * 2, pageH - F * 2);
+    doc.setLineWidth(0.25);
+    doc.rect(F + 1.6, F + 1.6, pageW - (F + 1.6) * 2, pageH - (F + 1.6) * 2);
+  };
+  const box = (x, y, w, h, fill) => {
+    doc.setDrawColor(...RULE);
+    doc.setLineWidth(0.35);
+    if (fill) { doc.setFillColor(...fill); doc.rect(x, y, w, h, 'FD'); } else doc.rect(x, y, w, h);
+  };
+  const label = (text, x, y) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...LEAF_RGB);
+    doc.text(text, x, y);
+  };
+  drawFrame();
+
+  // ── Header: logo | company | document title ──
+  let y = X;
+  const headH = 32;
+  box(X, y, W, headH);
+  const logo = 26;
+  try { doc.addImage(LOGO_DATA_URI, 'PNG', X + 3, y + 3, logo, logo); } catch (e) { /* print without logo */ }
+  const titleW = 52;
+  doc.setDrawColor(...RULE);
+  doc.line(X + logo + 6, y + 3, X + logo + 6, y + headH - 3);
+  doc.line(X + W - titleW, y, X + W - titleW, y + headH);
+  const cx = X + logo + 10;
+  const cw = W - titleW - logo - 14;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...GREEN);
-  doc.setFontSize(18);
-  doc.text(companyName, hx, top + 10, { maxWidth: pageW - hx - M });
-  let y = top + 16;
+  doc.setFontSize(companyName.length > 26 ? 14 : 16);
+  doc.text(doc.splitTextToSize(companyName, cw).slice(0, 2), cx, y + 10);
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.setTextColor(...GREY);
-  if (company?.address) {
-    doc.splitTextToSize(String(company.address), pageW - hx - M).slice(0, 2).forEach((line) => { doc.text(line, hx, y); y += 4.2; });
-  }
-  if (company?.fssai) { doc.text(`FSSAI: ${company.fssai}`, hx, y); y += 4.2; }
-  y = Math.max(y, top + logoSize) + 3;
+  let ay = y + (companyName.length > 26 ? 19 : 16.5);
+  if (company?.address) { doc.splitTextToSize(String(company.address), cw).slice(0, 2).forEach((l) => { doc.text(l, cx, ay); ay += 4; }); }
+  if (company?.fssai) { doc.text(`FSSAI Lic. No: ${company.fssai}`, cx, ay); ay += 4; }
+  doc.setFont('helvetica', 'italic');
+  doc.setTextColor(...LEAF_RGB);
+  doc.text('Fresh Fruits & Vegetables', cx, Math.min(ay + 1, y + headH - 3));
+  // title block
   doc.setFillColor(...GREEN);
-  doc.rect(M, y, pageW - M * 2, 8, 'F');
+  doc.rect(X + W - titleW, y, titleW, 13, 'F');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
+  doc.setFontSize(12);
   doc.setTextColor(255, 255, 255);
-  doc.text('BILL OF SUPPLY', pageW / 2, y + 5.5, { align: 'center' });
-  y += 13;
-
-  // Bill + customer boxes
-  const boxW = (pageW - M * 2 - 6) / 2;
-  const boxH = 26;
-  doc.setDrawColor(214, 209, 194);
-  doc.setFillColor(...SOFT);
-  doc.roundedRect(M, y, boxW, boxH, 1.5, 1.5, 'FD');
-  doc.roundedRect(M + boxW + 6, y, boxW, boxH, 1.5, 1.5, 'FD');
-  doc.setFontSize(8);
-  doc.setTextColor(...GREY);
-  doc.setFont('helvetica', 'bold');
-  doc.text('BILL TO', M + 4, y + 6);
-  doc.text('BILL DETAILS', M + boxW + 10, y + 6);
+  doc.text('BILL OF SUPPLY', X + W - titleW / 2, y + 8.3, { align: 'center' });
   doc.setTextColor(...GREEN);
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Original for Recipient', X + W - titleW / 2, y + 18, { align: 'center' });
+  const st = DS_STATUS[dsStatus(bill)];
+  const stColor = st.label === 'Paid' ? LEAF_RGB : (st.label === 'Partial' ? [183, 121, 31] : RED);
+  doc.setDrawColor(...stColor);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(X + W - titleW / 2 - 14, y + 21.5, 28, 7, 1.5, 1.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(...stColor);
+  doc.text(st.label.toUpperCase(), X + W - titleW / 2, y + 26.3, { align: 'center' });
+  y += headH + 4;
+
+  // ── Bill to | Bill details ──
+  const infoH = 30;
+  const half = W / 2;
+  box(X, y, W, infoH);
+  doc.setFillColor(...TINT);
+  doc.rect(X, y, W, 6, 'F');
+  doc.setDrawColor(...RULE);
+  doc.rect(X, y, W, 6);
+  doc.line(X + half, y, X + half, y + infoH);
+  label('BILL TO', X + 3, y + 4.2);
+  label('BILL DETAILS', X + half + 3, y + 4.2);
+  doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.text(String(bill.customer?.name || 'Walk-in customer'), M + 4, y + 12, { maxWidth: boxW - 8 });
+  doc.setTextColor(...GREEN);
+  doc.text(doc.splitTextToSize(String(bill.customer?.name || 'Walk-in customer'), half - 6)[0], X + 3, y + 12);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  let cy = y + 17;
-  if (bill.customer?.phone) { doc.text(`Mobile: ${bill.customer.phone}`, M + 4, cy); cy += 4.5; }
-  if (bill.customer?.address) doc.text(doc.splitTextToSize(String(bill.customer.address), boxW - 8).slice(0, 2), M + 4, cy);
-  const rx = M + boxW + 10;
-  doc.setFontSize(10);
-  doc.setFont('helvetica', 'bold');
-  doc.text(`Bill No: ${bill.billNo}`, rx, y + 12);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Date: ${dsDate(bill.date)}`, rx, y + 17.5);
-  const st = DS_STATUS[dsStatus(bill)];
-  doc.text(`Status: ${st.label}`, rx, y + 23);
-  y += boxH + 6;
+  doc.setTextColor(40, 40, 36);
+  let by = y + 17;
+  if (bill.customer?.phone) { doc.text(`Mobile: ${bill.customer.phone}`, X + 3, by); by += 4.5; }
+  if (bill.customer?.address) doc.text(doc.splitTextToSize(String(bill.customer.address), half - 6).slice(0, 2), X + 3, by);
+  const kv = [
+    ['Bill No.', bill.billNo],
+    ['Bill Date', dsDate(bill.date)],
+    ['Payment', Array.from(new Set((bill.payments || []).map((p) => DS_PAY_LABEL[p.mode] || p.mode))).join(', ') || 'Udhaar (credit)'],
+  ];
+  kv.forEach(([k, v], i) => {
+    const ry = y + 12 + i * 6;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(...GREY);
+    doc.text(k, X + half + 3, ry);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...GREEN);
+    doc.text(':', X + half + 25, ry);
+    doc.text(String(v || '-'), X + half + 28, ry, { maxWidth: half - 31 });
+  });
+  y += infoH + 4;
 
-  // Items
-  const body = (bill.rows || []).map((r, i) => [i + 1, r.name, String(r.qty), r.unit, dsMoneyPdf(r.rate).replace('Rs. ', ''), dsMoneyPdf(r.amount).replace('Rs. ', '')]);
+  // ── Items ──
+  const rows = (bill.rows || []).map((r, i) => [i + 1, r.name, String(r.qty), r.unit, dsMoneyPdf(r.rate).replace('Rs. ', ''), dsMoneyPdf(r.amount).replace('Rs. ', '')]);
+  const minRows = 8;
+  while (rows.length < minRows) rows.push(['', '', '', '', '', '']);
   doc.autoTable({
-    head: [['S.No', 'Item', 'Qty', 'Unit', 'Rate (Rs.)', 'Amount (Rs.)']],
-    body,
+    head: [['S.No', 'Description of Goods', 'Qty', 'Unit', 'Rate (Rs.)', 'Amount (Rs.)']],
+    body: rows,
+    foot: [['', 'Sub Total', '', '', '', dsMoneyPdf(bill.subtotal).replace('Rs. ', '')]],
     startY: y,
-    margin: { left: M, right: M, bottom: 20 },
+    margin: { left: X, right: X, top: X + 6, bottom: 26 },
     theme: 'grid',
-    styles: { font: 'helvetica', fontSize: 9.5, cellPadding: 2, textColor: [30, 30, 28], lineColor: [214, 209, 194], lineWidth: 0.2, valign: 'middle' },
+    showFoot: 'lastPage',
+    styles: { font: 'helvetica', fontSize: 9.5, cellPadding: 2.2, textColor: [30, 30, 28], lineColor: RULE, lineWidth: 0.25, valign: 'middle', minCellHeight: 7.5 },
     headStyles: { fillColor: GREEN, textColor: 255, fontStyle: 'bold', halign: 'center' },
-    alternateRowStyles: { fillColor: [251, 250, 246] },
+    footStyles: { fillColor: TINT, textColor: GREEN, fontStyle: 'bold', lineColor: RULE, lineWidth: 0.25 },
+    bodyStyles: { fillColor: [255, 255, 255] },
+    alternateRowStyles: { fillColor: SOFT },
     columnStyles: {
       0: { halign: 'center', cellWidth: 13 },
       1: { halign: 'left', fontStyle: 'bold' },
@@ -5736,70 +5797,105 @@ async function downloadDirectSaleBillPdf(bill, company) {
       4: { halign: 'right', cellWidth: 28 },
       5: { halign: 'right', cellWidth: 32 },
     },
+    didParseCell: (d) => {
+      if (d.section === 'foot') d.cell.styles.halign = d.column.index === 5 ? 'right' : (d.column.index === 1 ? 'right' : 'center');
+    },
+    didDrawPage: () => drawFrame(),
   });
   y = doc.lastAutoTable.finalY + 4;
 
-  // Totals block (right) + amount in words (left)
+  // ── Words + payments | totals ──
   const paid = dsPaid(bill);
   const due = dsDue(bill);
-  const lines = [['Subtotal', dsMoneyPdf(bill.subtotal)]];
-  if (Number(bill.discount) > 0) lines.push(['Discount', `- ${dsMoneyPdf(bill.discount)}`]);
-  lines.push(['TOTAL', dsMoneyPdf(bill.total)]);
-  lines.push(['Paid', dsMoneyPdf(paid)]);
-  lines.push(['Balance Due', dsMoneyPdf(due)]);
-  const tW = 78;
-  const needed = lines.length * 7 + 30;
-  if (y + needed > pageH - 22) { doc.addPage(); y = 20; }
-  const tx = pageW - M - tW;
-  lines.forEach(([label, value], i) => {
-    const isTotal = label === 'TOTAL';
-    const rowY = y + i * 7;
-    if (isTotal) { doc.setFillColor(...GREEN); doc.rect(tx, rowY, tW, 7, 'F'); doc.setTextColor(255, 255, 255); }
-    else if (label === 'Balance Due' && due > 0) { doc.setFillColor(243, 231, 226); doc.rect(tx, rowY, tW, 7, 'F'); doc.setTextColor(192, 57, 43); }
-    else doc.setTextColor(...GREEN);
-    doc.setFont('helvetica', isTotal || label === 'Balance Due' ? 'bold' : 'normal');
-    doc.setFontSize(isTotal ? 11 : 10);
-    doc.text(label, tx + 3, rowY + 5);
-    doc.text(value, tx + tW - 3, rowY + 5, { align: 'right' });
+  const totals = [['Sub Total', dsMoneyPdf(bill.subtotal)]];
+  if (Number(bill.discount) > 0) totals.push(['Discount', `- ${dsMoneyPdf(bill.discount)}`]);
+  totals.push(['GRAND TOTAL', dsMoneyPdf(bill.total)], ['Amount Paid', dsMoneyPdf(paid)], ['Balance Due', dsMoneyPdf(due)]);
+  const rowH = 7.5;
+  const sumH = Math.max(totals.length * rowH, 38);
+  const signH = 30;
+  if (y + sumH + signH + 12 > pageH - X) { doc.addPage(); drawFrame(); y = X; }
+  const tW = 74;
+  const lW = W - tW;
+  box(X, y, lW, sumH);
+  box(X + lW, y, tW, sumH);
+  // totals rows
+  totals.forEach(([k, v], i) => {
+    const ry = y + i * rowH;
+    const isGrand = k === 'GRAND TOTAL';
+    const isDue = k === 'Balance Due';
+    if (isGrand) { doc.setFillColor(...GREEN); doc.rect(X + lW, ry, tW, rowH, 'F'); }
+    else if (isDue && due > 0) { doc.setFillColor(251, 236, 232); doc.rect(X + lW, ry, tW, rowH, 'F'); }
+    doc.setDrawColor(...RULE);
+    doc.setLineWidth(0.25);
+    if (i > 0) doc.line(X + lW, ry, X + W, ry);
+    doc.setFont('helvetica', isGrand || isDue ? 'bold' : 'normal');
+    doc.setFontSize(isGrand ? 10.5 : 9.5);
+    doc.setTextColor(...(isGrand ? [255, 255, 255] : isDue && due > 0 ? RED : GREEN));
+    doc.text(k, X + lW + 3, ry + 5);
+    doc.text(v, X + W - 3, ry + 5, { align: 'right' });
   });
-  doc.setTextColor(...GREEN);
+  // amount in words + payments received
+  label('AMOUNT IN WORDS', X + 3, y + 5);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.text('Amount in words:', M, y + 5);
-  doc.setFont('helvetica', 'normal');
-  doc.text(doc.splitTextToSize(dsAmountInWords(bill.total), tx - M - 6), M, y + 10);
-  const payModes = Array.from(new Set((bill.payments || []).map((p) => DS_PAY_LABEL[p.mode] || p.mode)));
-  doc.setFont('helvetica', 'bold');
-  doc.text('Payment:', M, y + 22);
-  doc.setFont('helvetica', 'normal');
-  doc.text(payModes.length ? payModes.join(', ') : 'Udhaar (credit)', M + 16, y + 22);
-  y += Math.max(lines.length * 7, 26) + 8;
-  if (bill.note) {
-    doc.setFont('helvetica', 'italic');
-    doc.setTextColor(...GREY);
-    doc.text(doc.splitTextToSize(`Note: ${bill.note}`, pageW - M * 2), M, y);
-    y += 8;
-  }
-
-  // Footer
-  const fy = Math.max(y + 18, pageH - 34);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(...GREY);
-  doc.text('Fresh fruits & vegetables: GST not applicable (exempt supply).', M, fy);
-  doc.setTextColor(...LEAF_RGB);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.text('Thank you for your business!', M, fy + 6);
-  doc.setDrawColor(150, 150, 140);
-  doc.line(pageW - M - 60, fy + 10, pageW - M, fy + 10);
-  doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(...GREEN);
-  doc.text(`For ${companyName}`, pageW - M, fy + 15, { align: 'right' });
+  const words = doc.splitTextToSize(dsAmountInWords(bill.total), lW - 6).slice(0, 2);
+  doc.text(words, X + 3, y + 10);
+  let py = y + 10 + words.length * 4.2 + 3;
+  doc.setDrawColor(...RULE);
+  doc.line(X, py - 2.5, X + lW, py - 2.5);
+  label('PAYMENTS RECEIVED', X + 3, py + 1.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(40, 40, 36);
+  py += 6;
+  const pays = bill.payments || [];
+  if (!pays.length) { doc.text('No payment yet (udhaar).', X + 3, py); py += 4.3; }
+  pays.slice(0, 4).forEach((p) => {
+    doc.text(`${dsDate(p.date)}  -  ${DS_PAY_LABEL[p.mode] || p.mode}`, X + 3, py);
+    doc.text(dsMoneyPdf(p.amount), X + lW - 3, py, { align: 'right' });
+    py += 4.3;
+  });
+  if (pays.length > 4) doc.text(`+ ${pays.length - 4} more`, X + 3, py);
+  y += sumH + 4;
+
+  // ── Note / declaration ──
+  const noteLines = bill.note ? doc.splitTextToSize(`Note: ${bill.note}`, W - 6).slice(0, 2) : [];
+  const declH = 11 + noteLines.length * 4;
+  box(X, y, W, declH, SOFT);
+  doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(...GREY);
-  doc.text('Authorised Signatory', pageW - M, fy + 19.5, { align: 'right' });
+  doc.text('Declaration: Fresh fruits & vegetables are exempt from GST, hence no tax is charged on this bill.', X + 3, y + 4.8);
+  doc.text('This is a computer generated bill.', X + 3, y + 8.8);
+  if (noteLines.length) { doc.setTextColor(...GREEN); doc.text(noteLines, X + 3, y + 12.8); }
+  y += declH + 4;
+
+  // ── Signatures ──
+  const sy = Math.max(y, pageH - X - signH - 10);
+  box(X, sy, W / 2, signH);
+  box(X + W / 2, sy, W / 2, signH);
+  label("CUSTOMER'S SIGNATURE", X + 3, sy + 5);
+  doc.setDrawColor(150, 150, 140);
+  doc.line(X + 8, sy + signH - 7, X + W / 2 - 8, sy + signH - 7);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(...GREEN);
+  doc.text(`For ${companyName}`, X + W - 3, sy + 5.5, { align: 'right', maxWidth: W / 2 - 6 });
+  doc.line(X + W / 2 + 8, sy + signH - 7, X + W - 8, sy + signH - 7);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(...GREY);
+  doc.text('Authorised Signatory', X + W - W / 4, sy + signH - 2.5, { align: 'center' });
+  doc.text('Received the above goods in good condition', X + W / 4, sy + signH - 2.5, { align: 'center' });
+
+  // Thank-you strip
+  doc.setFillColor(...GREEN);
+  doc.rect(X, sy + signH + 2, W, 7, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text('Thank you for your business!', pageW / 2, sy + signH + 6.8, { align: 'center' });
 
   doc.save(`${bill.billNo}_${String(bill.customer?.name || 'customer').replace(/[^A-Za-z0-9]+/g, '_')}.pdf`);
 }
